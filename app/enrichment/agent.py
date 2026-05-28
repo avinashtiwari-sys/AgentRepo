@@ -1,0 +1,98 @@
+import json
+import anthropic
+from config import ANTHROPIC_API_KEY
+
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+SYSTEM_PROMPT = """You are a B2B sales intelligence agent. Given a company name and domain,
+use web search to find accurate information about the company.
+
+You must return a JSON object with exactly these fields:
+{
+  "employee_count": <integer or null if unknown>,
+  "employee_range": "<string range e.g. '100-250' or null>",
+  "industry": "<primary industry e.g. 'SaaS', 'FinTech', 'Healthcare IT'>",
+  "web_presence": <true if company has a real website and online presence>,
+  "is_competitor": <true if the company is a CRM, sales automation, or GTM tool>,
+  "confidence": "<high | med | low>",
+  "sources": ["<url>"]
+}
+
+Confidence rules:
+- high: employee count confirmed from 2+ sources (LinkedIn, Crunchbase, company site)
+- med: employee count from 1 source or estimated from funding/revenue signals
+- low: no reliable headcount data found, inference only
+"""
+
+USER_PROMPT = """Research this company:
+Company name: {company}
+Domain: {domain}
+
+Search for:
+1. "{company} number of employees"
+2. "{domain} company industry"
+
+Return only the JSON object, no explanation."""
+
+
+def run(company: str, domain: str) -> dict:
+    """Call Claude with web search to extract company size, industry, and confidence."""
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1024,
+            system=SYSTEM_PROMPT,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": USER_PROMPT.format(company=company, domain=domain),
+                }
+            ],
+        )
+
+        # Extract the final text block from the response
+        result_text = ""
+        for block in response.content:
+            if block.type == "text":
+                result_text = block.text.strip()
+
+        # Parse JSON — strip markdown fences if present
+        if result_text.startswith("```"):
+            result_text = result_text.split("```")[1]
+            if result_text.startswith("json"):
+                result_text = result_text[4:]
+
+        data = json.loads(result_text)
+        return _validate(data)
+
+    except json.JSONDecodeError:
+        return _fallback("could not parse Claude response")
+    except Exception as e:
+        return _fallback(str(e))
+
+
+def _validate(data: dict) -> dict:
+    """Ensure all required keys are present with safe defaults."""
+    return {
+        "employee_count": data.get("employee_count"),
+        "employee_range": data.get("employee_range"),
+        "industry": data.get("industry", "Unknown"),
+        "web_presence": bool(data.get("web_presence", False)),
+        "is_competitor": bool(data.get("is_competitor", False)),
+        "confidence": data.get("confidence", "low") if data.get("confidence") in ("high", "med", "low") else "low",
+        "sources": data.get("sources", []),
+    }
+
+
+def _fallback(reason: str) -> dict:
+    return {
+        "employee_count": None,
+        "employee_range": None,
+        "industry": "Unknown",
+        "web_presence": False,
+        "is_competitor": False,
+        "confidence": "low",
+        "sources": [],
+        "error": reason,
+    }

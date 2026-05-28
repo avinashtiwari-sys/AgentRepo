@@ -1,0 +1,26 @@
+# Environment — never commit secrets
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Database
+*.db
+*.sqlite3
+
+# Zip artifacts
+*.zip
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
