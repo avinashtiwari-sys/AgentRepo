@@ -17,13 +17,21 @@ def _extract_domain(email: str) -> str:
     return email.split("@")[-1].lower() if "@" in email else ""
 
 
+def _parse_name(contact_name: str):
+    """Split 'First Last' into first and last name."""
+    parts = contact_name.strip().split(" ", 1)
+    first = parts[0] if len(parts) > 0 else ""
+    last  = parts[1] if len(parts) > 1 else ""
+    return first, last
+
+
 @router.post("/webhook/zoho")
 async def zoho_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    # Token check — Zoho sends as query param e.g. ?X-Zoho-Webhook-Token=xxx
+    # Token check — Zoho sends as query param via Custom Parameters
     if ZOHO_WEBHOOK_SECRET:
         token = request.query_params.get("X-Zoho-Webhook-Token", "")
         if not _verify_token(token):
@@ -32,31 +40,34 @@ async def zoho_webhook(
     payload = await request.json()
 
     # Zoho sends a single object — wrap in list for uniform handling
-    leads_data = payload if isinstance(payload, list) else [payload]
+    contacts_data = payload if isinstance(payload, list) else [payload]
 
     accepted = []
-    for lead_data in leads_data:
-        # Match Zoho's actual field names from the webhook body
-        zoho_id = lead_data.get("lead_id", "").strip()
-        email   = lead_data.get("email", "").lower().strip()
+    for contact in contacts_data:
+        zoho_id = contact.get("contact_id", "").strip()
+        email   = contact.get("email", "").lower().strip()
 
         if not zoho_id or not email:
+            print(f"[webhook] skipped — missing contact_id or email: {contact}")
             continue
 
         # Dedup — skip if already received
         if db.query(Lead).filter(Lead.id == zoho_id).first():
+            print(f"[webhook] duplicate — {zoho_id} already exists")
             continue
+
+        first_name, last_name = _parse_name(contact.get("contact_name", ""))
 
         lead = Lead(
             id=zoho_id,
             email=email,
-            first_name=lead_data.get("first_name", ""),
-            last_name=lead_data.get("last_name", ""),
-            company=lead_data.get("company", ""),
+            first_name=first_name,
+            last_name=last_name,
+            company=contact.get("company", ""),
             domain=_extract_domain(email),
-            lead_source=lead_data.get("lead_source", ""),
+            lead_source=contact.get("lead_source", ""),
             status=LeadStatus.RECEIVED,
-            raw_payload=lead_data,
+            raw_payload=contact,
         )
         db.add(lead)
         db.commit()

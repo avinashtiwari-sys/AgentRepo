@@ -1,5 +1,5 @@
 """
-Local test — simulates a Zoho webhook POST with real field names.
+Local test — simulates a Zoho Contacts webhook POST.
 Run with: python test_webhook.py
 
 Make sure the server is running first:
@@ -8,15 +8,15 @@ Make sure the server is running first:
 import httpx
 
 payload = {
-    "lead_id": "TEST-LEAD-001",
-    "first_name": "Jane",
-    "last_name": "Smith",
+    "contact_id": "TEST-CONTACT-001",
+    "contact_name": "Jane Smith",
     "email": "jane@stripe.com",
     "company": "Stripe",
+    "lead_source": "Website",
     "phone": "9876543210",
+    "mobile": "9876543210",
 }
 
-# Token sent as query param — matches Zoho's Custom Parameters behaviour
 resp = httpx.post(
     "http://localhost:8000/webhook/zoho",
     params={"X-Zoho-Webhook-Token": "pcloudy_secure_2026"},
