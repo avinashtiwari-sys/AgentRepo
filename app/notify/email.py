@@ -1,5 +1,6 @@
 import smtplib
 import ssl
+from datetime import timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from config import SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM
@@ -21,6 +22,15 @@ def send_lead_alert(lead_id: str, rep: dict, lead_info: dict):
     segment        = lead_info.get("segment", "")
     zoho_url       = f"https://crm.zoho.com/crm/org/leads/{lead_id}"
 
+    received_at = lead_info.get("received_at")
+    if received_at:
+        # Ensure UTC label and format as "29 May 2026, 10:45 AM UTC"
+        if received_at.tzinfo is None:
+            received_at = received_at.replace(tzinfo=timezone.utc)
+        timestamp = received_at.strftime("%d %b %Y, %I:%M %p UTC")
+    else:
+        timestamp = "N/A"
+
     subject = f"New MQL: {company} → {rep['name']}"
 
     html = f"""
@@ -34,6 +44,7 @@ def send_lead_alert(lead_id: str, rep: dict, lead_info: dict):
         <tr><td><b>Industry</b></td><td>{industry}</td></tr>
         <tr style="background:#f5f5f5"><td><b>Employees</b></td><td>{employee_range}</td></tr>
         <tr><td><b>Confidence</b></td><td>{confidence}</td></tr>
+        <tr style="background:#f5f5f5"><td><b>Received At</b></td><td>{timestamp}</td></tr>
       </table>
       <br>
       <a href="{zoho_url}"

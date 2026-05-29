@@ -42,5 +42,6 @@ def run(lead: Lead, db: Session):
         "employee_count": employee_count,
         "confidence": enrichment.get("confidence"),
         "segment": segment,
+        "received_at": lead.created_at,
     }
     email.send_lead_alert(lead.id, rep, lead_info)
