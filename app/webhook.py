@@ -23,19 +23,22 @@ async def zoho_webhook(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    # Token check — skip in dev if secret not set
+    # Token check — Zoho sends as query param e.g. ?X-Zoho-Webhook-Token=xxx
     if ZOHO_WEBHOOK_SECRET:
-        token = request.headers.get("X-Zoho-Webhook-Token", "")
+        token = request.query_params.get("X-Zoho-Webhook-Token", "")
         if not _verify_token(token):
             raise HTTPException(status_code=401, detail="Invalid token")
 
     payload = await request.json()
-    leads_data = payload.get("leads", [payload])  # handle both list and single
+
+    # Zoho sends a single object — wrap in list for uniform handling
+    leads_data = payload if isinstance(payload, list) else [payload]
 
     accepted = []
     for lead_data in leads_data:
-        zoho_id = lead_data.get("id") or lead_data.get("Id")
-        email = lead_data.get("Email", "").lower().strip()
+        # Match Zoho's actual field names from the webhook body
+        zoho_id = lead_data.get("lead_id", "").strip()
+        email   = lead_data.get("email", "").lower().strip()
 
         if not zoho_id or not email:
             continue
@@ -47,11 +50,11 @@ async def zoho_webhook(
         lead = Lead(
             id=zoho_id,
             email=email,
-            first_name=lead_data.get("First_Name", ""),
-            last_name=lead_data.get("Last_Name", ""),
-            company=lead_data.get("Company", ""),
+            first_name=lead_data.get("first_name", ""),
+            last_name=lead_data.get("last_name", ""),
+            company=lead_data.get("company", ""),
             domain=_extract_domain(email),
-            lead_source=lead_data.get("Lead_Source", ""),
+            lead_source=lead_data.get("lead_source", ""),
             status=LeadStatus.RECEIVED,
             raw_payload=lead_data,
         )
