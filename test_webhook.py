@@ -8,6 +8,7 @@ Make sure the server is running first:
 import httpx
 
 payload = {
+    "token": "pcloudy_secure_2026",
     "contact_id": "TEST-CONTACT-001",
     "contact_name": "Jane Smith",
     "email": "jane@stripe.com",
@@ -19,7 +20,6 @@ payload = {
 
 resp = httpx.post(
     "http://localhost:8000/webhook/zoho",
-    params={"X-Zoho-Webhook-Token": "pcloudy_secure_2026"},
     json=payload,
 )
 print(f"Status : {resp.status_code}")

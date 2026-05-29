@@ -31,13 +31,14 @@ async def zoho_webhook(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    # Token check — Zoho sends as query param via Custom Parameters
+    payload = await request.json()
+
+    # Token check — read from JSON body (Zoho strips query params in raw JSON mode)
     if ZOHO_WEBHOOK_SECRET:
-        token = request.query_params.get("X-Zoho-Webhook-Token", "")
+        contacts_data = payload if isinstance(payload, list) else [payload]
+        token = contacts_data[0].get("token", "") if contacts_data else ""
         if not _verify_token(token):
             raise HTTPException(status_code=401, detail="Invalid token")
-
-    payload = await request.json()
 
     # Zoho sends a single object — wrap in list for uniform handling
     contacts_data = payload if isinstance(payload, list) else [payload]
