@@ -81,5 +81,10 @@ async def zoho_webhook(
 
 
 def _run_pipeline(lead_id: str):
-    from workers.pipeline import run_pipeline
-    run_pipeline(lead_id)
+    try:
+        from workers.pipeline import run_pipeline
+        run_pipeline(lead_id)
+    except Exception as e:
+        import traceback
+        print(f"[pipeline] ERROR for lead {lead_id}: {e}")
+        print(traceback.format_exc())
