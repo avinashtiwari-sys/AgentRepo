@@ -5,7 +5,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from config import SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM
 
-ALERT_TO = "PcloudySalesMarketing@opkey.com"
+ALERT_TO = "avinash.tiwari@sstsinc.com"
 
 
 def send_lead_alert(lead_id: str, rep: dict, lead_info: dict):
