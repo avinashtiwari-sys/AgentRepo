@@ -3,15 +3,28 @@ from sqlalchemy.orm import Session
 from app.notify import email
 from config import REPS, EMPLOYEE_THRESHOLD
 
-# Mutable index for enterprise round-robin
-_rr_index = {"value": 0}
-
-
-def _next_enterprise_rep() -> dict:
+def _next_enterprise_rep(db: Session) -> dict:
     reps = REPS["enterprise"]
-    rep = reps[_rr_index["value"] % len(reps)]
-    _rr_index["value"] += 1
-    return rep
+    rep_names = [r["name"] for r in reps]
+    
+    # Find the last enterprise lead that was routed
+    last_lead = (
+        db.query(Lead)
+        .filter(Lead.assigned_rep.in_(rep_names))
+        .order_by(Lead.updated_at.desc())
+        .first()
+    )
+    
+    if not last_lead or last_lead.assigned_rep not in rep_names:
+        return reps[0]
+        
+    # Get the index of the last rep and pick the next one
+    try:
+        last_index = rep_names.index(last_lead.assigned_rep)
+        next_index = (last_index + 1) % len(reps)
+        return reps[next_index]
+    except ValueError:
+        return reps[0]
 
 
 def run(lead: Lead, db: Session):
@@ -22,7 +35,7 @@ def run(lead: Lead, db: Session):
     # Determine segment and rep
     if employee_count is not None and employee_count > EMPLOYEE_THRESHOLD:
         segment = "Enterprise"
-        rep = _next_enterprise_rep()
+        rep = _next_enterprise_rep(db)
     else:
         segment = "SMB / Mid-Market"
         rep = REPS["smb"]
@@ -41,6 +54,7 @@ def run(lead: Lead, db: Session):
         "employee_range": enrichment.get("employee_range"),
         "employee_count": employee_count,
         "confidence": enrichment.get("confidence"),
+        "sources": enrichment.get("sources", []),
         "segment": segment,
         "received_at": lead.created_at,
     }

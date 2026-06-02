@@ -1,21 +1,31 @@
 import hmac
+from typing import List, Union, Optional
 from fastapi import APIRouter, BackgroundTasks, Request, HTTPException, Depends
+from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 from models.lead import Lead, LeadStatus
 from models.database import get_db
 from config import ZOHO_WEBHOOK_SECRET
+from app.logging_config import logger
 
 router = APIRouter()
 
+class ZohoLeadPayload(BaseModel):
+    token: str
+    contact_id: str
+    contact_name: str
+    email: EmailStr
+    company: Optional[str] = ""
+    lead_source: Optional[str] = ""
 
 def _verify_token(token: str) -> bool:
-    """Constant-time comparison against the shared secret configured in Zoho webhook settings."""
+    """Constant-time comparison against the shared secret."""
+    if not ZOHO_WEBHOOK_SECRET:
+        return False
     return hmac.compare_digest(token, ZOHO_WEBHOOK_SECRET)
-
 
 def _extract_domain(email: str) -> str:
     return email.split("@")[-1].lower() if "@" in email else ""
-
 
 def _parse_name(contact_name: str):
     """Split 'First Last' into first and last name."""
@@ -24,67 +34,53 @@ def _parse_name(contact_name: str):
     last  = parts[1] if len(parts) > 1 else ""
     return first, last
 
-
 @router.post("/webhook/zoho")
 async def zoho_webhook(
-    request: Request,
+    payload: Union[ZohoLeadPayload, List[ZohoLeadPayload]],
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    payload = await request.json()
-
-    # Token check — read from JSON body (Zoho strips query params in raw JSON mode)
-    if ZOHO_WEBHOOK_SECRET:
-        contacts_data = payload if isinstance(payload, list) else [payload]
-        token = contacts_data[0].get("token", "") if contacts_data else ""
-        if not _verify_token(token):
-            raise HTTPException(status_code=401, detail="Invalid token")
-
-    # Zoho sends a single object — wrap in list for uniform handling
+    # Enforce token check
     contacts_data = payload if isinstance(payload, list) else [payload]
+    
+    if not contacts_data or not _verify_token(contacts_data[0].token):
+        logger.warning("Rejected webhook: Invalid or missing token")
+        raise HTTPException(status_code=401, detail="Invalid or missing webhook token")
 
     accepted = []
     for contact in contacts_data:
-        zoho_id = contact.get("contact_id", "").strip()
-        email   = contact.get("email", "").lower().strip()
+        zoho_id = contact.contact_id.strip()
+        email   = contact.email.lower().strip()
 
-        if not zoho_id or not email:
-            print(f"[webhook] skipped — missing contact_id or email: {contact}")
-            continue
-
-        # Dedup — skip if already received
         if db.query(Lead).filter(Lead.id == zoho_id).first():
-            print(f"[webhook] duplicate — {zoho_id} already exists")
+            logger.info(f"Skipping duplicate lead: {zoho_id}")
             continue
 
-        first_name, last_name = _parse_name(contact.get("contact_name", ""))
+        first_name, last_name = _parse_name(contact.contact_name)
 
         lead = Lead(
             id=zoho_id,
             email=email,
             first_name=first_name,
             last_name=last_name,
-            company=contact.get("company", ""),
+            company=contact.company,
             domain=_extract_domain(email),
-            lead_source=contact.get("lead_source", ""),
+            lead_source=contact.lead_source,
             status=LeadStatus.RECEIVED,
-            raw_payload=contact,
+            raw_payload=contact.model_dump(),
         )
         db.add(lead)
         db.commit()
 
-        # Schedule pipeline AFTER response is sent — Zoho gets 200 immediately
+        logger.info(f"Accepted lead {zoho_id} from {contact.company}")
         background_tasks.add_task(_run_pipeline, zoho_id)
         accepted.append(zoho_id)
 
     return {"status": "accepted", "lead_ids": accepted}
-
 
 def _run_pipeline(lead_id: str):
     try:
         from workers.pipeline import run_pipeline
         run_pipeline(lead_id)
     except Exception as e:
-        import traceback
-        print(f"[pipeline] ERROR for lead {lead_id}: {e}")
-        print(traceback.format_exc())
+        logger.error(f"Pipeline failure for lead {lead_id}: {e}", exc_info=True)

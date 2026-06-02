@@ -65,7 +65,7 @@ GTMFlow/
 │   ├── lead.py              # Lead DB model + status enum
 │   └── database.py          # SQLAlchemy engine + session
 ├── config.py                # All env vars in one place
-├── requirements.txt
+├── pyproject.toml
 ├── deploy.sh                # One-command EC2 deployment
 ├── nginx.conf               # Nginx reverse proxy config
 ├── test_webhook.py          # Local test script
@@ -88,7 +88,7 @@ cd GTMFlow
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e .
 ```
 
 ### 3. Configure environment

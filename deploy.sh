@@ -23,7 +23,7 @@ cd "$APP_DIR"
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip -q
-pip install -r requirements.txt -q
+pip install . -q
 
 echo "==> Setting up .env..."
 if [ ! -f .env ]; then

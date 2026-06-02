@@ -1,4 +1,5 @@
 import json
+import time
 import anthropic
 from config import ANTHROPIC_API_KEY
 
@@ -37,39 +38,50 @@ Return only the JSON object, no explanation."""
 
 def run(company: str, domain: str) -> dict:
     """Call Claude with web search to extract company size, industry, and confidence."""
-    try:
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
-            messages=[
-                {
-                    "role": "user",
-                    "content": USER_PROMPT.format(company=company, domain=domain),
-                }
-            ],
-        )
+    max_retries = 3
+    retry_delay = 2  # seconds
 
-        # Extract the final text block from the response
-        result_text = ""
-        for block in response.content:
-            if block.type == "text":
-                result_text = block.text.strip()
+    for attempt in range(max_retries):
+        try:
+            response = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1024,
+                system=SYSTEM_PROMPT,
+                tools=[{"type": "web_search_20250305", "name": "web_search"}],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": USER_PROMPT.format(company=company, domain=domain),
+                    }
+                ],
+            )
 
-        # Parse JSON — strip markdown fences if present
-        if result_text.startswith("```"):
-            result_text = result_text.split("```")[1]
-            if result_text.startswith("json"):
-                result_text = result_text[4:]
+            # Extract the final text block from the response
+            result_text = ""
+            for block in response.content:
+                if block.type == "text":
+                    result_text = block.text.strip()
 
-        data = json.loads(result_text)
-        return _validate(data)
+            # Parse JSON — strip markdown fences if present
+            if result_text.startswith("```"):
+                result_text = result_text.split("```")[1]
+                if result_text.startswith("json"):
+                    result_text = result_text[4:]
 
-    except json.JSONDecodeError:
-        return _fallback("could not parse Claude response")
-    except Exception as e:
-        return _fallback(str(e))
+            data = json.loads(result_text)
+            return _validate(data)
+
+        except (anthropic.APIError, anthropic.RateLimitError) as e:
+            if attempt < max_retries - 1:
+                wait = retry_delay * (2 ** attempt)
+                print(f"[enrichment] API error, retrying in {wait}s... (Attempt {attempt+1}/{max_retries})")
+                time.sleep(wait)
+                continue
+            return _fallback(f"Claude API failed after {max_retries} attempts: {str(e)}")
+        except json.JSONDecodeError:
+            return _fallback("could not parse Claude response")
+        except Exception as e:
+            return _fallback(str(e))
 
 
 def _validate(data: dict) -> dict:
