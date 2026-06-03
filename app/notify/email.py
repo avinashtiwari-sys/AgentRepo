@@ -80,13 +80,16 @@ def send_lead_alert(lead_id: str, rep: dict, lead_info: dict):
     msg["To"]      = ALERT_RECIPIENT_EMAIL
     msg.attach(MIMEText(html, "html"))
 
+    # Convert comma-separated string to list for SMTP sendmail
+    recipients = [r.strip() for r in ALERT_RECIPIENT_EMAIL.split(",") if r.strip()]
+
     try:
         context = ssl.create_default_context()
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
             server.ehlo()
             server.starttls(context=context)
             server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(SMTP_FROM, ALERT_RECIPIENT_EMAIL, msg.as_string())
+            server.sendmail(SMTP_FROM, recipients, msg.as_string())
         print(f"[email] alert sent for lead {lead_id} → {ALERT_RECIPIENT_EMAIL}")
     except Exception as e:
         print(f"[email] alert error: {e}")

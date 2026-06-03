@@ -15,14 +15,4 @@ SMTP_PORT     = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER     = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM     = os.getenv("SMTP_FROM", "")
-ALERT_RECIPIENT_EMAIL = os.getenv("ALERT_RECIPIENT_EMAIL", "avinash.tiwari@sstsinc.com")
-
-REPS = {
-    "smb": {"name": "Preksha", "email": os.getenv("REP_PREKSHA_EMAIL", "")},
-    "enterprise": [
-        {"name": "Srini", "email": os.getenv("REP_SRINI_EMAIL", "")},
-        {"name": "Anuja", "email": os.getenv("REP_ANUJA_EMAIL", "")},
-    ],
-}
-
-EMPLOYEE_THRESHOLD = 250
+ALERT_RECIPIENT_EMAIL = os.getenv("ALERT_RECIPIENT_EMAIL", "avinash.tiwari@sstsinc.com, PcloudySalesMarketing@opkey.com")
