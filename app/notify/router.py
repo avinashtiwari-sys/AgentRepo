@@ -13,6 +13,11 @@ def run(lead: Lead, db: Session):
 
     print(f"[router] lead {lead.id} → Sales Team")
 
+    # Skip email notification for Apollo-sourced leads
+    if lead.lead_source and lead.lead_source.strip().lower() == "apollo":
+        print(f"[router] lead {lead.id} — skipping notification (source=Apollo)")
+        return
+
     # Email alert
     lead_info = {
         "company": lead.company,
