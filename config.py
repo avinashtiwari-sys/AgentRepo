@@ -4,9 +4,6 @@ import os
 load_dotenv()
 
 ZOHO_WEBHOOK_SECRET = os.getenv("ZOHO_WEBHOOK_SECRET", "")
-ZOHO_CLIENT_ID = os.getenv("ZOHO_CLIENT_ID", "")
-ZOHO_CLIENT_SECRET = os.getenv("ZOHO_CLIENT_SECRET", "")
-ZOHO_REFRESH_TOKEN = os.getenv("ZOHO_REFRESH_TOKEN", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./gtmflow.db")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")

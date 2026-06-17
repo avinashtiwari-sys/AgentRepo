@@ -79,11 +79,8 @@ GTMFlow/
 │   │   └── confidence.py    # Gate 3 — confidence threshold
 │   ├── enrichment/
 │   │   └── agent.py         # Claude API web-search enrichment (with retries)
-│   ├── crm/
-│   │   └── zoho.py          # Zoho CRM REST client (write-back; not yet wired into pipeline)
 │   └── notify/
 │       ├── email.py         # SMTP HTML email alert
-│       ├── teams.py         # MS Teams Adaptive Card alert (optional; not yet wired)
 │       └── router.py        # Routing + notification trigger
 ├── workers/
 │   ├── queue.py             # RQ queue wiring + enqueue_pipeline()
@@ -101,8 +98,9 @@ GTMFlow/
 └── .env.example             # Environment variable template
 ```
 
-> **Not yet wired:** `app/crm/zoho.py` (CRM write-back) and `app/notify/teams.py` (Teams alerts)
-> exist but are not currently called by the pipeline. They are kept for future use.
+> **Not yet implemented:** the pipeline enriches and routes leads but does **not** write results
+> back to Zoho CRM. CRM write-back is a known gap — see the git history for a starting point
+> (`app/crm/zoho.py`, removed in cleanup).
 
 ---
 
@@ -279,9 +277,6 @@ curl https://YOUR_DOMAIN/health
 |----------|-------------|---------|
 | `ZOHO_WEBHOOK_SECRET` | Shared token set in the Zoho webhook custom header | — (required) |
 | `ANTHROPIC_API_KEY` | Claude API key for AI enrichment | — (required) |
-| `ZOHO_CLIENT_ID` | Zoho OAuth client ID (for CRM write-back) | — |
-| `ZOHO_CLIENT_SECRET` | Zoho OAuth client secret | — |
-| `ZOHO_REFRESH_TOKEN` | Zoho OAuth refresh token | — |
 | `DATABASE_URL` | SQLite (default) or Postgres connection string | `sqlite:///./gtmflow.db` |
 | `REDIS_URL` | Redis URL backing the async RQ job queue | `redis://localhost:6379/0` |
 | `SMTP_HOST` | SMTP server hostname | — |
@@ -321,7 +316,7 @@ recommended-but-optional vars (SMTP, recipients) log a warning when missing.
 | Database | SQLite (dev) / PostgreSQL (prod) via SQLAlchemy |
 | Migrations | Alembic |
 | Email | SMTP via Python smtplib |
-| CRM | Zoho CRM REST API |
+| CRM | Zoho CRM (inbound webhook) |
 | Web server | Nginx (HTTPS via certbot) |
 | Process manager | systemd |
 | Dependency mgmt | uv (lockfile committed) |

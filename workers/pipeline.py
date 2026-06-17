@@ -2,7 +2,6 @@ from models.database import SessionLocal
 from models.lead import Lead, LeadStatus
 from app.gates import domain, verifier, confidence
 from app.enrichment import agent
-from app.crm import zoho
 from app.notify import router as notify_router
 
 
