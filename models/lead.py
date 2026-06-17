@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, Enum, JSON
+from sqlalchemy import Column, String, DateTime, JSON
 from sqlalchemy.orm import declarative_base
 from datetime import datetime
 import enum
@@ -14,6 +14,7 @@ class LeadStatus(str, enum.Enum):
     REVIEW = "review"
     MQL_VALID = "mql_valid"
     ROUTED = "routed"
+    SKIPPED = "skipped"
 
 
 class Lead(Base):
@@ -26,7 +27,10 @@ class Lead(Base):
     company = Column(String)
     domain = Column(String)
     lead_source = Column(String)
-    status = Column(Enum(LeadStatus), default=LeadStatus.RECEIVED)
+    # Stored as a plain string (not a DB-native enum) so new statuses don't
+    # require an ALTER TYPE migration. LeadStatus is a str-enum, so assigning
+    # a member stores its value (e.g. "mql_valid").
+    status = Column(String, default=LeadStatus.RECEIVED.value, nullable=False)
     enrichment_data = Column(JSON, default=dict)   # size, industry, confidence
     assigned_rep = Column(String)
     raw_payload = Column(JSON)

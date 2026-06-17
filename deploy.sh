@@ -35,6 +35,9 @@ if [ ! -f .env ]; then
     exit 1
 fi
 
+echo "==> Running database migrations..."
+"$APP_DIR/.venv/bin/alembic" upgrade head
+
 echo "==> Installing systemd services..."
 USER_NAME=$(whoami)
 

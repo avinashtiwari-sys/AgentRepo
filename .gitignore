@@ -15,6 +15,9 @@ build/
 *.db
 *.sqlite3
 
+# Logs
+*.log
+
 # Zip artifacts
 *.zip
 

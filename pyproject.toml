@@ -22,6 +22,7 @@ dependencies = [
     "email-validator>=2.0.0",
     "redis==5.0.4",
     "rq==1.16.2",
+    "alembic==1.13.2",
 ]
 
 [project.scripts]

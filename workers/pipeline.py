@@ -14,6 +14,13 @@ def run_pipeline(lead_id: str):
         if not lead:
             return
 
+        # Skip Apollo-sourced leads entirely — no enrichment, no routing
+        if lead.lead_source and lead.lead_source.strip().lower() == "apollo":
+            lead.status = LeadStatus.SKIPPED
+            db.commit()
+            print(f"[pipeline] lead {lead_id} — skipping pipeline (source=Apollo)")
+            return
+
         # Gate 1 — domain valid?
         if not domain.run(lead, db):
             return

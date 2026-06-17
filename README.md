@@ -98,18 +98,30 @@ cp .env.example .env
 nano .env
 ```
 
-Fill in at minimum:
+Fill in at minimum (the app fails fast at boot if a required var is missing):
 
-| Variable | Required for |
-|----------|-------------|
-| `ANTHROPIC_API_KEY` | AI enrichment |
-| `SMTP_HOST` / `SMTP_USER` / `SMTP_PASSWORD` | Email alerts |
-| `ZOHO_WEBHOOK_SECRET` | Webhook auth (can leave blank locally) |
+| Variable | Required for | Required at boot? |
+|----------|-------------|-------------------|
+| `ZOHO_WEBHOOK_SECRET` | Webhook auth | **Yes** |
+| `ANTHROPIC_API_KEY` | AI enrichment | **Yes** |
+| `REDIS_URL` | Async job queue (defaults to `redis://localhost:6379/0`) | No |
+| `SMTP_HOST` / `SMTP_USER` / `SMTP_PASSWORD` | Email alerts | No (warns) |
+| `ALERT_RECIPIENT_EMAIL` | Email alert recipients | No (warns) |
 
-### 4. Run the server
+### 4. Run the server and worker
+
+Migrations run automatically on server startup. You also need Redis running and
+an RQ worker to process leads:
 
 ```bash
+# terminal 1 — Redis (or use Docker / a managed instance)
+redis-server
+
+# terminal 2 — web server (applies migrations on startup)
 uvicorn app.main:app --reload
+
+# terminal 3 — background worker
+rq worker pipeline
 ```
 
 ### 5. Test with a mock lead
@@ -185,6 +197,7 @@ curl http://YOUR_EC2_IP/health
 | `ZOHO_REFRESH_TOKEN` | Zoho OAuth refresh token |
 | `ANTHROPIC_API_KEY` | Claude API key for AI enrichment |
 | `DATABASE_URL` | SQLite (default) or Postgres connection string |
+| `REDIS_URL` | Redis URL backing the async RQ job queue |
 | `SMTP_HOST` | SMTP server hostname |
 | `SMTP_PORT` | SMTP port (default: 587) |
 | `SMTP_USER` | SMTP login username |
@@ -207,6 +220,7 @@ curl http://YOUR_EC2_IP/health
 | `review` | Low confidence — needs human review |
 | `mql_valid` | Passed all gates |
 | `routed` | Assigned to rep, email sent |
+| `skipped` | Apollo-sourced lead — pipeline short-circuited, no processing |
 
 ---
 
@@ -215,7 +229,7 @@ curl http://YOUR_EC2_IP/health
 | Layer | Technology |
 |-------|-----------|
 | API server | FastAPI + Uvicorn |
-| Background jobs | FastAPI BackgroundTasks |
+| Background jobs | RQ (Redis Queue) worker |
 | AI enrichment | Anthropic Claude API (web search) |
 | Database | SQLite (dev) / PostgreSQL (prod) |
 | Email | SMTP via Python smtplib |

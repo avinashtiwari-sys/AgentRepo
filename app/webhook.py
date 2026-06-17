@@ -1,26 +1,29 @@
 import hmac
 from typing import List, Union, Optional
-from fastapi import APIRouter, BackgroundTasks, Request, HTTPException, Depends
+from fastapi import APIRouter, Request, HTTPException, Depends
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 from models.lead import Lead, LeadStatus
 from models.database import get_db
 from config import ZOHO_WEBHOOK_SECRET
 from app.logging_config import logger
+from workers.queue import enqueue_pipeline
 
 router = APIRouter()
 
 class ZohoLeadPayload(BaseModel):
-    token: str
     contact_id: str
     contact_name: str
     email: EmailStr
     company: Optional[str] = ""
     lead_source: Optional[str] = ""
+    # Optional: Zoho may send the shared secret in the body, but the
+    # X-Zoho-Webhook-Token header is the preferred/ documented transport.
+    token: Optional[str] = None
 
-def _verify_token(token: str) -> bool:
+def _verify_token(token: Optional[str]) -> bool:
     """Constant-time comparison against the shared secret."""
-    if not ZOHO_WEBHOOK_SECRET:
+    if not ZOHO_WEBHOOK_SECRET or not token:
         return False
     return hmac.compare_digest(token, ZOHO_WEBHOOK_SECRET)
 
@@ -37,13 +40,15 @@ def _parse_name(contact_name: str):
 @router.post("/webhook/zoho")
 async def zoho_webhook(
     payload: Union[ZohoLeadPayload, List[ZohoLeadPayload]],
-    background_tasks: BackgroundTasks,
+    request: Request,
     db: Session = Depends(get_db),
 ):
-    # Enforce token check
     contacts_data = payload if isinstance(payload, list) else [payload]
-    
-    if not contacts_data or not _verify_token(contacts_data[0].token):
+
+    # Auth: prefer the X-Zoho-Webhook-Token header; fall back to a body token.
+    header_token = request.headers.get("X-Zoho-Webhook-Token")
+    body_token = contacts_data[0].token if contacts_data else None
+    if not _verify_token(header_token or body_token):
         logger.warning("Rejected webhook: Invalid or missing token")
         raise HTTPException(status_code=401, detail="Invalid or missing webhook token")
 
@@ -67,20 +72,14 @@ async def zoho_webhook(
             domain=_extract_domain(email),
             lead_source=contact.lead_source,
             status=LeadStatus.RECEIVED,
-            raw_payload=contact.model_dump(),
+            # Never persist the shared secret.
+            raw_payload=contact.model_dump(exclude={"token"}),
         )
         db.add(lead)
         db.commit()
 
         logger.info(f"Accepted lead {zoho_id} from {contact.company}")
-        background_tasks.add_task(_run_pipeline, zoho_id)
+        enqueue_pipeline(zoho_id)
         accepted.append(zoho_id)
 
     return {"status": "accepted", "lead_ids": accepted}
-
-def _run_pipeline(lead_id: str):
-    try:
-        from workers.pipeline import run_pipeline
-        run_pipeline(lead_id)
-    except Exception as e:
-        logger.error(f"Pipeline failure for lead {lead_id}: {e}", exc_info=True)
