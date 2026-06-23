@@ -8,10 +8,7 @@ Base = declarative_base()
 
 class LeadStatus(str, enum.Enum):
     RECEIVED = "received"
-    INVALID_DOMAIN = "invalid_domain"
     ENRICHING = "enriching"
-    INVALID_COMPANY = "invalid_company"
-    REVIEW = "review"
     MQL_VALID = "mql_valid"
     ROUTED = "routed"
     SKIPPED = "skipped"

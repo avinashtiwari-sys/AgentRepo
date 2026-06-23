@@ -7,6 +7,7 @@ from models.lead import Lead, LeadStatus
 from models.database import get_db
 from config import ZOHO_WEBHOOK_SECRET
 from app.logging_config import logger
+from app.limits import limiter
 from workers.queue import enqueue_pipeline
 
 router = APIRouter()
@@ -38,6 +39,7 @@ def _parse_name(contact_name: str):
     return first, last
 
 @router.post("/webhook/zoho")
+@limiter.limit("10/minute")
 async def zoho_webhook(
     payload: Union[ZohoLeadPayload, List[ZohoLeadPayload]],
     request: Request,

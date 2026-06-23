@@ -23,6 +23,8 @@ dependencies = [
     "redis==5.0.4",
     "rq==1.16.2",
     "alembic==1.13.2",
+    "slowapi==0.1.9",
+    "sentry-sdk==2.15.0",
 ]
 
 [project.scripts]
