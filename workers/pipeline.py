@@ -1,48 +1,82 @@
 from models.database import SessionLocal
 from models.lead import Lead, LeadStatus
+from app.gates import domain, verifier, confidence
 from app.enrichment import agent
-from app.notify import email
+from app.notify import router as notify_router
+from app.logging_config import logger
 
 
 def run_pipeline(lead_id: str):
+    """Entry point for the RQ worker. Runs all pipeline stages for a lead."""
     db = SessionLocal()
     try:
         lead = db.query(Lead).filter(Lead.id == lead_id).first()
         if not lead:
+            logger.warning("pipeline received unknown lead_id=%s", lead_id)
             return
 
+        logger.info(
+            "[pipeline] lead_id=%s company=%s domain=%s email=%s source=%s status=%s — entering pipeline",
+            lead.id, lead.company, lead.domain, lead.email, lead.lead_source, lead.status,
+        )
+
+        # Skip Apollo-sourced leads entirely — no enrichment, no routing
         if lead.lead_source and lead.lead_source.strip().lower() == "apollo":
-            lead.status = LeadStatus.SKIPPED
-            db.commit()
-            print(f"[pipeline] {lead_id} skipped (Apollo)")
+            lead.set_status(LeadStatus.SKIPPED, db=db)
+            logger.info(
+                "[pipeline] lead_id=%s source=%s — SKIPPED (Apollo filter)",
+                lead.id, lead.lead_source,
+            )
             return
 
-        enrichment = {}
-        if lead.company and lead.domain:
-            print(f"[pipeline] {lead_id} enriching {lead.company}")
-            enrichment = agent.run(lead.company, lead.domain)
-            lead.enrichment_data = enrichment
-            profiles = enrichment.get("profiles", [])
-            print(f"[pipeline] {lead_id} enriched — confidence={enrichment.get('confidence', '?')}, "
-                  f"profiles={enrichment.get('profile_count', 0)}")
+        # Gate 1 — domain valid?
+        if not domain.run(lead, db):
+            return
 
-        lead.assigned_rep = "Sales Team"
-        lead.status = LeadStatus.ROUTED
-        db.commit()
+        # Phase 3 — AI enrichment
+        logger.info(
+            "[pipeline] lead_id=%s company=%s domain=%s — starting AI enrichment",
+            lead.id, lead.company, lead.domain,
+        )
+        enrichment = agent.run(lead.company, lead.domain)
+        lead.enrichment_data = enrichment
+        lead.set_status(LeadStatus.ENRICHING, db=db)
+        logger.info(
+            "[pipeline] lead_id=%s enriched — confidence=%s employees=%s industry=%s web_presence=%s is_competitor=%s sources=%s",
+            lead.id,
+            enrichment.get("confidence"),
+            enrichment.get("employee_count"),
+            enrichment.get("industry"),
+            enrichment.get("web_presence"),
+            enrichment.get("is_competitor"),
+            enrichment.get("sources", []),
+        )
 
-        email.send_lead_alert(lead.id, {"name": "Sales Team"}, {
-            "company": lead.company,
-            "email": lead.email,
-            "industry": enrichment.get("industry"),
-            "employee_range": enrichment.get("employee_range"),
-            "employee_count": enrichment.get("employee_count"),
-            "confidence": enrichment.get("confidence"),
-            "sources": enrichment.get("sources", []),
-            "profiles": enrichment.get("profiles", []),
-            "profile_count": enrichment.get("profile_count", 0),
-            "segment": "All",
-            "received_at": lead.created_at,
-        })
+        # Gate 2 — company verifiable?
+        if not verifier.run(lead, db):
+            return
+
+        # Gate 3 — confidence high/med?
+        if not confidence.run(lead, db):
+            return
+
+        # Mark MQL valid
+        lead.set_status(LeadStatus.MQL_VALID, db=db)
+        logger.info(
+            "[pipeline] lead_id=%s company=%s — MQL_VALID, proceeding to routing",
+            lead.id, lead.company,
+        )
+
+        # Phase 5 — route and notify
+        notify_router.run(lead, db)
+
+        logger.info(
+            "[pipeline] lead_id=%s company=%s status=%s assigned_rep=%s — pipeline complete",
+            lead.id, lead.company, lead.status, lead.assigned_rep,
+        )
+
+    except Exception:
+        logger.exception("[pipeline] lead_id=%s — unhandled exception in pipeline", lead_id)
 
     finally:
         db.close()
