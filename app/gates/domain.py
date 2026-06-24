@@ -1,6 +1,8 @@
 import dns.resolver
 from models.lead import Lead, LeadStatus
 from sqlalchemy.orm import Session
+from app.logging_config import logger
+from app.gates.base import mark_failed
 
 # Common free/disposable email providers
 BLOCKED_DOMAINS = {
@@ -26,25 +28,25 @@ def run(lead: Lead, db: Session) -> bool:
     Gate 1: domain valid?
     Returns True to advance, False to mark invalid and stop.
     """
-    domain = lead.domain
+    logger.info(
+        "[gate:domain] lead_id=%s checking domain=%s",
+        lead.id, lead.domain,
+    )
 
-    if not domain:
-        _mark_invalid(lead, db, "no domain")
+    if not lead.domain:
+        mark_failed(lead, db, tag="domain", status=LeadStatus.INVALID_DOMAIN, reason="no domain")
         return False
 
-    if domain in BLOCKED_DOMAINS:
-        _mark_invalid(lead, db, f"free/disposable domain: {domain}")
+    if lead.domain in BLOCKED_DOMAINS:
+        mark_failed(lead, db, tag="domain", status=LeadStatus.INVALID_DOMAIN, reason=f"free/disposable domain: {lead.domain}")
         return False
 
-    if not _has_mx_record(domain):
-        _mark_invalid(lead, db, f"no MX record: {domain}")
+    if not _has_mx_record(lead.domain):
+        mark_failed(lead, db, tag="domain", status=LeadStatus.INVALID_DOMAIN, reason=f"no MX record: {lead.domain}")
         return False
 
+    logger.info(
+        "[gate:domain] lead_id=%s domain=%s — PASSED",
+        lead.id, lead.domain,
+    )
     return True
-
-
-def _mark_invalid(lead: Lead, db: Session, reason: str):
-    lead.status = LeadStatus.INVALID_DOMAIN
-    lead.enrichment_data = {**lead.enrichment_data, "invalid_reason": reason}
-    db.commit()
-    print(f"[gate1] lead {lead.id} rejected — {reason}")

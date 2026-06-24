@@ -2,6 +2,7 @@ import json
 import time
 import anthropic
 from config import ANTHROPIC_API_KEY
+from app.logging_config import logger
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -74,13 +75,18 @@ def run(company: str, domain: str) -> dict:
         except (anthropic.APIError, anthropic.RateLimitError) as e:
             if attempt < max_retries - 1:
                 wait = retry_delay * (2 ** attempt)
-                print(f"[enrichment] API error, retrying in {wait}s... (Attempt {attempt+1}/{max_retries})")
+                logger.warning(
+                    "[enrichment] company=%s domain=%s — API error, retrying in %ss (attempt %s/%s)",
+                    company, domain, wait, attempt + 1, max_retries
+                )
                 time.sleep(wait)
                 continue
             return _fallback(f"Claude API failed after {max_retries} attempts: {str(e)}")
         except json.JSONDecodeError:
+            logger.error("[enrichment] company=%s domain=%s — could not parse Claude response", company, domain)
             return _fallback("could not parse Claude response")
         except Exception as e:
+            logger.exception("[enrichment] company=%s domain=%s — unexpected error", company, domain)
             return _fallback(str(e))
 
 

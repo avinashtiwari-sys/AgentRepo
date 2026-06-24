@@ -3,6 +3,7 @@ from models.lead import Lead, LeadStatus
 from app.gates import domain, verifier, confidence
 from app.enrichment import agent
 from app.notify import router as notify_router
+from app.logging_config import logger
 
 
 def run_pipeline(lead_id: str):
@@ -11,13 +12,21 @@ def run_pipeline(lead_id: str):
     try:
         lead = db.query(Lead).filter(Lead.id == lead_id).first()
         if not lead:
+            logger.warning("pipeline received unknown lead_id=%s", lead_id)
             return
+
+        logger.info(
+            "[pipeline] lead_id=%s company=%s domain=%s email=%s source=%s status=%s — entering pipeline",
+            lead.id, lead.company, lead.domain, lead.email, lead.lead_source, lead.status,
+        )
 
         # Skip Apollo-sourced leads entirely — no enrichment, no routing
         if lead.lead_source and lead.lead_source.strip().lower() == "apollo":
-            lead.status = LeadStatus.SKIPPED
-            db.commit()
-            print(f"[pipeline] lead {lead_id} — skipping pipeline (source=Apollo)")
+            lead.set_status(LeadStatus.SKIPPED, db=db)
+            logger.info(
+                "[pipeline] lead_id=%s source=%s — SKIPPED (Apollo filter)",
+                lead.id, lead.lead_source,
+            )
             return
 
         # Gate 1 — domain valid?
@@ -25,12 +34,23 @@ def run_pipeline(lead_id: str):
             return
 
         # Phase 3 — AI enrichment
-        print(f"[pipeline] lead {lead_id} — enriching {lead.company} ({lead.domain})")
+        logger.info(
+            "[pipeline] lead_id=%s company=%s domain=%s — starting AI enrichment",
+            lead.id, lead.company, lead.domain,
+        )
         enrichment = agent.run(lead.company, lead.domain)
         lead.enrichment_data = enrichment
-        lead.status = LeadStatus.ENRICHING
-        db.commit()
-        print(f"[pipeline] lead {lead_id} enriched — confidence={enrichment['confidence']}, employees={enrichment['employee_count']}")
+        lead.set_status(LeadStatus.ENRICHING, db=db)
+        logger.info(
+            "[pipeline] lead_id=%s enriched — confidence=%s employees=%s industry=%s web_presence=%s is_competitor=%s sources=%s",
+            lead.id,
+            enrichment.get("confidence"),
+            enrichment.get("employee_count"),
+            enrichment.get("industry"),
+            enrichment.get("web_presence"),
+            enrichment.get("is_competitor"),
+            enrichment.get("sources", []),
+        )
 
         # Gate 2 — company verifiable?
         if not verifier.run(lead, db):
@@ -41,12 +61,22 @@ def run_pipeline(lead_id: str):
             return
 
         # Mark MQL valid
-        lead.status = LeadStatus.MQL_VALID
-        db.commit()
-        print(f"[pipeline] lead {lead_id} — MQL valid")
+        lead.set_status(LeadStatus.MQL_VALID, db=db)
+        logger.info(
+            "[pipeline] lead_id=%s company=%s — MQL_VALID, proceeding to routing",
+            lead.id, lead.company,
+        )
 
         # Phase 5 — route and notify
         notify_router.run(lead, db)
+
+        logger.info(
+            "[pipeline] lead_id=%s company=%s status=%s assigned_rep=%s — pipeline complete",
+            lead.id, lead.company, lead.status, lead.assigned_rep,
+        )
+
+    except Exception:
+        logger.exception("[pipeline] lead_id=%s — unhandled exception in pipeline", lead_id)
 
     finally:
         db.close()

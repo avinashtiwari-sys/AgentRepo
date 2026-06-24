@@ -1,5 +1,7 @@
 from models.lead import Lead, LeadStatus
 from sqlalchemy.orm import Session
+from app.logging_config import logger
+from app.gates.base import mark_failed
 
 
 def run(lead: Lead, db: Session) -> bool:
@@ -8,21 +10,25 @@ def run(lead: Lead, db: Session) -> bool:
     Checks web presence exists and domain is not a competitor.
     Returns True to advance, False to mark invalid and stop.
     """
-    enrichment = lead.enrichment_data or {}
+    web_presence = lead.enrichment.get("web_presence")
+    is_competitor = lead.enrichment.get("is_competitor")
+    sources = lead.enrichment.get("sources", [])
 
-    if not enrichment.get("web_presence"):
-        _mark_invalid(lead, db, "no web presence found")
+    logger.info(
+        "[gate:verifier] lead_id=%s company=%s web_presence=%s is_competitor=%s sources=%s",
+        lead.id, lead.company, web_presence, is_competitor, sources,
+    )
+
+    if not web_presence:
+        mark_failed(lead, db, tag="verifier", status=LeadStatus.INVALID_COMPANY, reason="no web presence found")
         return False
 
-    if enrichment.get("is_competitor"):
-        _mark_invalid(lead, db, "competitor domain")
+    if is_competitor:
+        mark_failed(lead, db, tag="verifier", status=LeadStatus.INVALID_COMPANY, reason="competitor domain")
         return False
 
+    logger.info(
+        "[gate:verifier] lead_id=%s company=%s — PASSED",
+        lead.id, lead.company,
+    )
     return True
-
-
-def _mark_invalid(lead: Lead, db: Session, reason: str):
-    lead.status = LeadStatus.INVALID_COMPANY
-    lead.enrichment_data = {**lead.enrichment_data, "invalid_reason": reason}
-    db.commit()
-    print(f"[gate2] lead {lead.id} rejected — {reason}")
