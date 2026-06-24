@@ -12,6 +12,9 @@ class LeadStatus(str, enum.Enum):
     MQL_VALID = "mql_valid"
     ROUTED = "routed"
     SKIPPED = "skipped"
+    INVALID_DOMAIN = "invalid_domain"
+    INVALID_COMPANY = "invalid_company"
+    REVIEW = "review"
 
 
 class Lead(Base):

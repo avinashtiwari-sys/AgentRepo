@@ -1,4 +1,5 @@
 import dns.resolver
+from functools import lru_cache
 from models.lead import Lead, LeadStatus
 from sqlalchemy.orm import Session
 from app.logging_config import logger
@@ -15,6 +16,7 @@ BLOCKED_DOMAINS = {
 }
 
 
+@lru_cache(maxsize=1024)
 def _has_mx_record(domain: str) -> bool:
     try:
         answers = dns.resolver.resolve(domain, "MX", lifetime=5)
@@ -37,7 +39,7 @@ def run(lead: Lead, db: Session) -> bool:
         mark_failed(lead, db, tag="domain", status=LeadStatus.INVALID_DOMAIN, reason="no domain")
         return False
 
-    if lead.domain in BLOCKED_DOMAINS:
+    if lead.domain.lower() in BLOCKED_DOMAINS:
         mark_failed(lead, db, tag="domain", status=LeadStatus.INVALID_DOMAIN, reason=f"free/disposable domain: {lead.domain}")
         return False
 

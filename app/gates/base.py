@@ -13,7 +13,7 @@ def mark_failed(
     reason: str,
 ) -> None:
     """Reject a lead at a gate with a reason and log the event."""
-    lead.set_status(status, db=db)
+    lead.status = status
     lead.enrichment_data = {**lead.enrichment, "invalid_reason": reason}
     db.commit()
     logger.warning(

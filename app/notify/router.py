@@ -28,6 +28,7 @@ def run(lead: Lead, db: Session):
         "employee_count": lead.enrichment.get("employee_count"),
         "confidence": lead.enrichment.get("confidence"),
         "sources": lead.enrichment.get("sources", []),
+        "profiles": lead.enrichment.get("profiles", []),
         "segment": "All",
         "received_at": lead.created_at,
     }

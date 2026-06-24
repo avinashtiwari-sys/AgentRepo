@@ -7,7 +7,7 @@ from app.logging_config import logger
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 SYSTEM_PROMPT = """You are a B2B sales intelligence agent. Given a company name and domain,
-use web search to find accurate information about the company.
+use web search to find accurate information about the company, including finding key employee profiles (especially QA or Testing roles if possible) from LinkedIn or other sources.
 
 You must return a JSON object with exactly these fields:
 {
@@ -17,7 +17,16 @@ You must return a JSON object with exactly these fields:
   "web_presence": <true if company has a real website and online presence>,
   "is_competitor": <true if the company is a CRM, sales automation, or GTM tool>,
   "confidence": "<high | med | low>",
-  "sources": ["<url>"]
+  "sources": ["<url>"],
+  "profiles": [
+    {
+      "name": "<string>",
+      "title": "<string>",
+      "seniority": "<string, e.g. Manager, Director, IC>",
+      "summary": "<string, brief expertise summary>",
+      "linkedin": "<string, LinkedIn URL or empty string>"
+    }
+  ]
 }
 
 Confidence rules:
@@ -33,6 +42,7 @@ Domain: {domain}
 Search for:
 1. "{company} number of employees"
 2. "{domain} company industry"
+3. "{company} QA OR Testing OR Engineering LinkedIn"
 
 Return only the JSON object, no explanation."""
 
@@ -100,6 +110,7 @@ def _validate(data: dict) -> dict:
         "is_competitor": bool(data.get("is_competitor", False)),
         "confidence": data.get("confidence", "low") if data.get("confidence") in ("high", "med", "low") else "low",
         "sources": data.get("sources", []),
+        "profiles": data.get("profiles", []),
     }
 
 
@@ -112,5 +123,6 @@ def _fallback(reason: str) -> dict:
         "is_competitor": False,
         "confidence": "low",
         "sources": [],
+        "profiles": [],
         "error": reason,
     }
