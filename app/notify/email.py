@@ -4,10 +4,11 @@ from datetime import timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from config import SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM, ALERT_RECIPIENT_EMAIL, TEST_EMAIL, MODE
+from app.logging_config import logger
 
 def send_lead_alert(lead_id: str, rep: dict, lead_info: dict):
     if not SMTP_HOST or not SMTP_USER:
-        print("[email] SMTP not configured — skipping alert")
+        logger.warning("[email] SMTP not configured — skipping alert")
         return
 
     company = lead_info.get("company", "Unknown") or "Unknown"
@@ -80,9 +81,6 @@ def send_lead_alert(lead_id: str, rep: dict, lead_info: dict):
     if MODE == "prod":
         msg["To"] = ALERT_RECIPIENT_EMAIL
         recipients = [r.strip() for r in ALERT_RECIPIENT_EMAIL.split(",") if r.strip()]
-        if TEST_EMAIL:
-            msg["Cc"] = TEST_EMAIL
-            recipients.append(TEST_EMAIL.strip())
         tag = "prod"
     else:
         msg["To"] = TEST_EMAIL or "dev@localhost"
@@ -90,7 +88,7 @@ def send_lead_alert(lead_id: str, rep: dict, lead_info: dict):
         tag = "dev"
 
     if not recipients:
-        print("[email] no recipients — skipping")
+        logger.warning("[email] lead_id=%s — no recipients, skipping", lead_id)
         return
 
     try:
@@ -98,6 +96,6 @@ def send_lead_alert(lead_id: str, rep: dict, lead_info: dict):
             server.starttls(context=ssl.create_default_context())
             server.login(SMTP_USER, SMTP_PASSWORD)
             server.sendmail(SMTP_FROM, recipients, msg.as_string())
-        print(f"[email] [{tag}] sent {lead_id} -> {recipients}")
+        logger.info("[email] [%s] sent %s -> %s", tag, lead_id, recipients)
     except Exception as e:
-        print(f"[email] [{tag}] error: {e}")
+        logger.error("[email] [%s] failed to send %s: %s", tag, lead_id, str(e))

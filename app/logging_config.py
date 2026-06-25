@@ -1,6 +1,6 @@
 import logging
 import sys
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 
 def setup_logging():
     """Configure structured logging for the application."""
@@ -20,9 +20,9 @@ def setup_logging():
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
 
-    # File Handler (with rotation)
-    file_handler = RotatingFileHandler(
-        "gtmflow.log", maxBytes=10*1024*1024, backupCount=5
+    # File Handler (daily rotation, keep 30 days)
+    file_handler = TimedRotatingFileHandler(
+        "gtmflow.log", when="midnight", interval=1, backupCount=30
     )
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)

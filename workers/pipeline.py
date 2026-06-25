@@ -20,12 +20,12 @@ def run_pipeline(lead_id: str):
             lead.id, lead.company, lead.domain, lead.email, lead.lead_source, lead.status,
         )
 
-        # Skip Apollo-sourced leads entirely — no enrichment, no routing
+        # Reject Apollo-sourced leads — no enrichment, no routing
         if lead.lead_source and lead.lead_source.strip().lower() == "apollo":
             lead.set_status(LeadStatus.SKIPPED, db=db)
-            logger.info(
-                "[pipeline] lead_id=%s source=%s — SKIPPED (Apollo filter)",
-                lead.id, lead.lead_source,
+            logger.warning(
+                "[pipeline] lead_id=%s company=%s email=%s source=%s — REJECTED (Apollo-sourced leads are not processed)",
+                lead.id, lead.company, lead.email, lead.lead_source,
             )
             return
 

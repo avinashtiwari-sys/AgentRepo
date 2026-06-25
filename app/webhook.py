@@ -46,12 +46,26 @@ async def zoho_webhook(
     db: Session = Depends(get_db),
 ):
     contacts_data = payload if isinstance(payload, list) else [payload]
+    client_ip = request.client.host if request.client else "unknown"
+
+    # Log every incoming webhook request with lead summaries
+    lead_summaries = [
+        f"id={c.contact_id} email={c.email} company={c.company} source={c.lead_source}"
+        for c in contacts_data
+    ]
+    logger.info(
+        "[webhook] received %d lead(s) from %s — %s",
+        len(contacts_data), client_ip, " | ".join(lead_summaries),
+    )
 
     # Auth: prefer the X-Zoho-Webhook-Token header; fall back to a body token.
     header_token = request.headers.get("X-Zoho-Webhook-Token")
     body_token = contacts_data[0].token if contacts_data else None
     if not _verify_token(header_token or body_token):
-        logger.warning("Rejected webhook: Invalid or missing token")
+        logger.warning(
+            "[webhook] REJECTED — invalid or missing token from %s — leads: %s",
+            client_ip, " | ".join(lead_summaries),
+        )
         raise HTTPException(status_code=401, detail="Invalid or missing webhook token")
 
     accepted = []
@@ -60,7 +74,7 @@ async def zoho_webhook(
         email   = contact.email.lower().strip()
 
         if db.query(Lead).filter(Lead.id == zoho_id).first():
-            logger.info(f"Skipping duplicate lead: {zoho_id}")
+            logger.info(f"Skipping duplicate lead: {zoho_id} email={email}")
             continue
 
         first_name, last_name = _parse_name(contact.contact_name)
@@ -80,8 +94,15 @@ async def zoho_webhook(
         db.add(lead)
         db.commit()
 
-        logger.info(f"Accepted lead {zoho_id} from {contact.company}")
+        logger.info(
+            "[webhook] ACCEPTED lead_id=%s email=%s company=%s domain=%s source=%s",
+            zoho_id, email, contact.company, lead.domain, contact.lead_source,
+        )
         enqueue_pipeline(zoho_id)
         accepted.append(zoho_id)
 
+    logger.info(
+        "[webhook] processed %d/%d leads — accepted: %s",
+        len(accepted), len(contacts_data), accepted,
+    )
     return {"status": "accepted", "lead_ids": accepted}

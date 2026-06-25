@@ -1,14 +1,12 @@
-from models.lead import Lead, LeadStatus
+from models.lead import Lead
 from sqlalchemy.orm import Session
 from app.logging_config import logger
-from app.gates.base import mark_failed
 
 
 def run(lead: Lead, db: Session) -> bool:
     """
-    Gate 2: company verifiable?
-    Checks web presence exists and domain is not a competitor.
-    Returns True to advance, False to mark invalid and stop.
+    Gate 2: company verifier.
+    Logs web presence and competitor findings but always passes.
     """
     web_presence = lead.enrichment.get("web_presence")
     is_competitor = lead.enrichment.get("is_competitor")
@@ -19,16 +17,20 @@ def run(lead: Lead, db: Session) -> bool:
         lead.id, lead.company, web_presence, is_competitor, sources,
     )
 
+    issues = []
     if not web_presence:
-        mark_failed(lead, db, tag="verifier", status=LeadStatus.INVALID_COMPANY, reason="no web presence found")
-        return False
-
+        issues.append("no web presence found")
     if is_competitor:
-        mark_failed(lead, db, tag="verifier", status=LeadStatus.INVALID_COMPANY, reason="competitor domain")
-        return False
+        issues.append("competitor domain")
 
-    logger.info(
-        "[gate:verifier] lead_id=%s company=%s — PASSED",
-        lead.id, lead.company,
-    )
+    if issues:
+        logger.warning(
+            "[gate:verifier] lead_id=%s company=%s — issues found: %s — continuing pipeline",
+            lead.id, lead.company, "; ".join(issues),
+        )
+    else:
+        logger.info(
+            "[gate:verifier] lead_id=%s company=%s — PASSED",
+            lead.id, lead.company,
+        )
     return True

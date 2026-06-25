@@ -1,9 +1,8 @@
 import dns.resolver
 from functools import lru_cache
-from models.lead import Lead, LeadStatus
+from models.lead import Lead
 from sqlalchemy.orm import Session
 from app.logging_config import logger
-from app.gates.base import mark_failed
 
 # Common free/disposable email providers
 BLOCKED_DOMAINS = {
@@ -27,28 +26,30 @@ def _has_mx_record(domain: str) -> bool:
 
 def run(lead: Lead, db: Session) -> bool:
     """
-    Gate 1: domain valid?
-    Returns True to advance, False to mark invalid and stop.
+    Gate 1: domain check.
+    Logs findings but always passes — no lead is rejected here.
     """
     logger.info(
         "[gate:domain] lead_id=%s checking domain=%s",
         lead.id, lead.domain,
     )
 
+    issues = []
     if not lead.domain:
-        mark_failed(lead, db, tag="domain", status=LeadStatus.INVALID_DOMAIN, reason="no domain")
-        return False
+        issues.append("no domain")
+    elif lead.domain.lower() in BLOCKED_DOMAINS:
+        issues.append(f"free/disposable domain: {lead.domain}")
+    elif not _has_mx_record(lead.domain):
+        issues.append(f"no MX record: {lead.domain}")
 
-    if lead.domain.lower() in BLOCKED_DOMAINS:
-        mark_failed(lead, db, tag="domain", status=LeadStatus.INVALID_DOMAIN, reason=f"free/disposable domain: {lead.domain}")
-        return False
-
-    if not _has_mx_record(lead.domain):
-        mark_failed(lead, db, tag="domain", status=LeadStatus.INVALID_DOMAIN, reason=f"no MX record: {lead.domain}")
-        return False
-
-    logger.info(
-        "[gate:domain] lead_id=%s domain=%s — PASSED",
-        lead.id, lead.domain,
-    )
+    if issues:
+        logger.warning(
+            "[gate:domain] lead_id=%s domain=%s — issues found: %s — continuing pipeline",
+            lead.id, lead.domain, "; ".join(issues),
+        )
+    else:
+        logger.info(
+            "[gate:domain] lead_id=%s domain=%s — PASSED",
+            lead.id, lead.domain,
+        )
     return True
