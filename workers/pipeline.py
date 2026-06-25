@@ -38,7 +38,8 @@ def run_pipeline(lead_id: str):
             "[pipeline] lead_id=%s company=%s domain=%s — starting AI enrichment",
             lead.id, lead.company, lead.domain,
         )
-        enrichment = agent.run(lead.company, lead.domain)
+        contact_name = f"{lead.first_name} {lead.last_name}".strip() or lead.email.split("@")[0]
+        enrichment = agent.run(lead.domain, lead.domain, contact_name=contact_name, email=lead.email)
         lead.enrichment_data = enrichment
         lead.set_status(LeadStatus.ENRICHING, db=db)
         logger.info(

@@ -31,31 +31,32 @@ def send_lead_alert(lead_id: str, rep: dict, lead_info: dict):
 
     sources_row = ""
     if sources:
-        links = "".join(f'<li><a href="{s}">{s[:35]}...</a></li>' for s in sources)
+        links = "".join(f'<li><a href="{s}">{s[:40]}...</a></li>' for s in sources)
         sources_row = f"<tr><td><b>Sources</b></td><td><ul style=padding-left:16px;margin:0>{links}</ul></td></tr>"
+
+    # Search queries (from Gemini grounding metadata — shows what was searched)
+    search_queries = lead_info.get("_search_queries", [])
+    queries_row = ""
+    if search_queries:
+        qlist = "".join(f"<li>{q}</li>" for q in search_queries)
+        queries_row = f"<tr style=background:#f5f5f5><td><b>Searches</b></td><td><ul style=padding-left:16px;margin:0;font-size:12px;color:#555>{qlist}</ul></td></tr>"
 
     profiles = lead_info.get("profiles", [])
     profiles_section = ""
     if profiles:
-        rows = ""
-        for i, p in enumerate(profiles[:10], 1):
-            linkedin = p.get("linkedin", "")
-            name = p.get("name", "Unknown")
-            title = p.get("title", "")
-            seniority = p.get("seniority", "")
-            summary = p.get("summary", "")
-            linkedin_html = f'<a href="{linkedin}" style=color:#1a73e8>LinkedIn</a>' if linkedin else "N/A"
-            bg = "#f9f9f9" if i % 2 == 0 else "#ffffff"
-            rows += f"""<tr style=background:{bg}>
-<td style=padding:8px;border-bottom:1px solid #ddd><b>{name}</b><br><span style=font-size:12px;color:#666>{title}</span></td>
-<td style=padding:8px;border-bottom:1px solid #ddd;font-size:13px>{seniority}</td>
-<td style=padding:8px;border-bottom:1px solid #ddd;font-size:12px>{summary}</td>
-<td style=padding:8px;border-bottom:1px solid #ddd;font-size:13px>{linkedin_html}</td>
-</tr>"""
-        profiles_section = f"""<h3 style=color:#1a73e8;margin-top:24px>QA / Testing Profiles Found ({len(profiles)})</h3>
-<table cellpadding=0 cellspacing=0 style=border-collapse:collapse;width:100%;font-family:Arial,sans-serif;font-size:13px>
-<tr style=background:#1a73e8;color:#fff><th style=padding:8px;text-align:left>Name / Title</th><th style=padding:8px;text-align:left>Seniority</th><th style=padding:8px;text-align:left>Expertise</th><th style=padding:8px;text-align:left>Profile</th></tr>
-{rows}</table>"""
+        p = profiles[0]
+        linkedin = p.get("linkedin", "")
+        name = p.get("name", "Unknown")
+        title = p.get("title", "")
+        summary = p.get("summary", "")
+        if linkedin and linkedin.lower() != "unknown":
+            linkedin_html = f'<a href="{linkedin}" style=color:#1a73e8>LinkedIn Profile</a>'
+        else:
+            linkedin_html = "N/A"
+        profiles_section = f"""<h3 style=color:#1a73e8;margin-top:24px>Lead Contact</h3>
+<table cellpadding=8 cellspacing=0 style=border-collapse:collapse;width:100%;font-family:Arial,sans-serif;font-size:13px;background:#f9f9f9;border:1px solid #ddd>
+<tr><td style=font-weight:bold;width:100px>{name}</td><td style=font-size:12px;color:#666>{title}</td><td style=font-size:12px>{summary[:200]}</td><td style=font-size:13px>{linkedin_html}</td></tr>
+</table>"""
 
     html = f"""<html><body style=font-family:Arial,sans-serif;color:#222;max-width:600px>
 <h2 style=color:#1a73e8>New Lead: {company}</h2>
@@ -67,11 +68,12 @@ def send_lead_alert(lead_id: str, rep: dict, lead_info: dict):
 <tr style=background:#f5f5f5><td><b>Employees</b></td><td>{emp_range}</td></tr>
 <tr><td><b>Accuracy</b></td><td style=color:{acc_color};font-weight:bold>{acc_label}</td></tr>
 {sources_row}
+{queries_row}
 <tr style=background:#f5f5f5><td><b>Received</b></td><td>{timestamp}</td></tr>
 </table>
 {profiles_section}
 <br><a href="{zoho_url}" style=background:#1a73e8;color:#fff;padding:10px 20px;text-decoration:none;border-radius:4px;display:inline-block>Open in Zoho CRM</a>
-<p style=font-size:12px;color:#666>QA/Testing profiles via Claude AI web search enrichment.</p></body></html>"""
+<p style=font-size:12px;color:#666>Lead enrichment via AI web search.</p></body></html>"""
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"New Lead: {company} -> {rep['name']}"

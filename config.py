@@ -3,10 +3,42 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# -- Active provider ---------------------------------------------------
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "anthropic").lower()
+
+# -- Provider registry -------------------------------------------------
+# Each provider has its own API key and model env var.
+# Add new providers here and in .env.
+_PROVIDER_CONFIG = {
+    "anthropic": {
+        "api_key": os.getenv("ANTHROPIC_API_KEY", ""),
+        "model": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+    },
+    "google": {
+        "api_key": os.getenv("GOOGLE_API_KEY", ""),
+        "model": os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"),
+    },
+}
+
+# Resolve the active provider's config
+_active = _PROVIDER_CONFIG.get(LLM_PROVIDER)
+if _active is None:
+    valid = ", ".join(_PROVIDER_CONFIG)
+    raise RuntimeError(f"Unknown LLM_PROVIDER '{LLM_PROVIDER}'. Valid options: {valid}")
+
+LLM_API_KEY = _active["api_key"]
+LLM_MODEL = _active["model"]
+
+# -- Backward compat aliases -------------------------------------------
+ANTHROPIC_API_KEY = _PROVIDER_CONFIG["anthropic"]["api_key"]
+GOOGLE_API_KEY = _PROVIDER_CONFIG["google"]["api_key"]
+
+# -- Zoho CRM Webhook --------------------------------------------------
 ZOHO_WEBHOOK_SECRET = os.getenv("ZOHO_WEBHOOK_SECRET", "")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./gtmflow.db")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+# -- SMTP / Email ------------------------------------------------------
 SMTP_HOST = os.getenv("SMTP_HOST", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
@@ -17,11 +49,14 @@ TEST_EMAIL = os.getenv("TEST_EMAIL", "")
 MODE = os.getenv("MODE", "dev").lower()
 SENTRY_DSN = os.getenv("SENTRY_DSN", "")
 
-_REQUIRED = {"ZOHO_WEBHOOK_SECRET": ZOHO_WEBHOOK_SECRET, "ANTHROPIC_API_KEY": ANTHROPIC_API_KEY}
-
 
 def validate_config():
-    missing = [n for n, v in _REQUIRED.items() if not v]
+    """Validate required config based on the active LLM provider."""
+    if LLM_PROVIDER == "google":
+        required = {"ZOHO_WEBHOOK_SECRET": ZOHO_WEBHOOK_SECRET, "GOOGLE_API_KEY": GOOGLE_API_KEY}
+    else:
+        required = {"ZOHO_WEBHOOK_SECRET": ZOHO_WEBHOOK_SECRET, "ANTHROPIC_API_KEY": ANTHROPIC_API_KEY}
+    missing = [n for n, v in required.items() if not v]
     if missing:
         raise RuntimeError("Missing required env vars: " + ", ".join(missing) + ". Set them in .env")
     return [n for n in ["SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "ALERT_RECIPIENT_EMAIL"] if not os.getenv(n)]
