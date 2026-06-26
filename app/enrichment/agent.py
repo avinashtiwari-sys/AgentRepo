@@ -49,6 +49,18 @@ Step 3: If found, include their LinkedIn URL and job title. If not found, set to
 
 CRITICAL: The "profiles" array must contain ONLY {contact_name} — no executives, no founders, no other employees. But you may search broadly in step 1 to discover them.
 
+Person search — look across ALL these sources (not just LinkedIn):
+- LinkedIn (linkedin.com/in/)
+- Twitter/X (twitter.com/, x.com/)
+- GitHub (github.com/)
+- Crunchbase (crunchbase.com/person/)
+- AngelList / Wellfound (wellfound.com/)
+- ZoomInfo, Apollo, Lusha
+- Company "Team" or "About" pages
+- Any professional profile or directory listing
+
+If found on any platform, include that URL. If truly not found anywhere, set to "Unknown".
+
 Confidence rules:
 - high: employee count confirmed from 2+ sources
 - med: employee count from 1 source
@@ -60,10 +72,14 @@ Domain: {domain}
 Contact: {contact_name} ({email})
 
 1. Determine the company name from the domain — if the domain is "intecbusiness.co.uk", the company is likely "inTEC Business" or similar.
-2. Search: "{domain}" site:linkedin.com/in employees people — find who works there
-3. Search: "{domain}" company information number of employees industry
-4. From the results, find {contact_name} and include ONLY them in profiles.
-5. Set "company_name" to the actual company name you discovered (never leave it empty — use the domain to infer if needed).
+2. Search for the domain and company info: "{domain}" company information number of employees industry
+3. Search for the person across ALL platforms:
+   - "{contact_name}" "{domain}" linkedin
+   - "{contact_name}" "{domain}" twitter
+   - "{contact_name}" "{domain}" github
+   - "{contact_name}" "{domain}" crunchbase
+4. Set "company_name" to the actual company name you discovered (never leave it empty — use the domain to infer if needed).
+5. In the "profiles" array, include {contact_name} with their title and profile URL from whichever platform you found them on (LinkedIn, Twitter, GitHub, etc.). If truly not found anywhere, set to "Unknown".
 
 Return the JSON only. No explanation."""
 
@@ -80,7 +96,7 @@ def run(company: str, domain: str, contact_name: str = "", email: str = "") -> d
             if LLM_PROVIDER == "google":
                 result_text, metadata = _call_gemini(prompt)
             elif LLM_PROVIDER == "openai":
-                result_text, metadata = _call_openai(prompt, domain)
+                result_text, metadata = _call_openai(prompt, domain, contact_name, email)
             else:
                 result_text, metadata = _call_anthropic(prompt)
 
@@ -219,7 +235,7 @@ def _search_tavily(query: str, max_results: int = 5) -> list:
         return []
 
 
-def _call_openai(prompt: str, domain: str = "") -> tuple:
+def _call_openai(prompt: str, domain: str = "", contact_name: str = "", email: str = "") -> tuple:
     """Call an OpenAI-compatible endpoint (local LLM). Returns (json_text, metadata_dict).
 
     Because local models don't have built-in web search, we first gather
@@ -231,6 +247,14 @@ def _call_openai(prompt: str, domain: str = "") -> tuple:
         f"{search_domain} company information number of employees industry",
         f"{search_domain} employees LinkedIn",
     ]
+    # Add person searches across multiple platforms
+    person_name = contact_name.strip() if contact_name else ""
+    if person_name:
+        search_queries.extend([
+            f'"{person_name}" "{search_domain}" linkedin',
+            f'"{person_name}" "{search_domain}" twitter',
+            f'"{person_name}" "{search_domain}" github',
+        ])
     all_sources = []
     for q in search_queries:
         results = _search_tavily(q, max_results=4)
