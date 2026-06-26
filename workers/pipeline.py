@@ -42,9 +42,21 @@ def run_pipeline(lead_id: str):
         enrichment = agent.run(lead.domain, lead.domain, contact_name=contact_name, email=lead.email)
         lead.enrichment_data = enrichment
         lead.set_status(LeadStatus.ENRICHING, db=db)
+
+        # If Zoho didn't provide a company name, fill it from enrichment
+        if not lead.company or lead.company.strip() == "":
+            discovered = enrichment.get("company_name", "").strip()
+            if discovered:
+                lead.company = discovered
+                logger.info(
+                    "[pipeline] lead_id=%s — company resolved from enrichment: '%s'",
+                    lead.id, discovered,
+                )
+
         logger.info(
-            "[pipeline] lead_id=%s enriched — confidence=%s employees=%s industry=%s web_presence=%s is_competitor=%s sources=%s",
+            "[pipeline] lead_id=%s enriched — company=%s confidence=%s employees=%s industry=%s web_presence=%s is_competitor=%s sources=%s",
             lead.id,
+            lead.company,
             enrichment.get("confidence"),
             enrichment.get("employee_count"),
             enrichment.get("industry"),

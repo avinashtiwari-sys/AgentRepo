@@ -2,7 +2,7 @@ import json
 import time
 import httpx
 import anthropic
-from config import LLM_PROVIDER, LLM_API_KEY, LLM_MODEL
+from config import LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, LLM_ENDPOINT, TAVILY_API_KEY
 from app.logging_config import logger
 
 # ── Provider setup ────────────────────────────────────────────────────
@@ -11,6 +11,8 @@ from app.logging_config import logger
 
 if LLM_PROVIDER == "google":
     logger.info("[enrichment] using provider=google model=%s", LLM_MODEL)
+elif LLM_PROVIDER == "openai":
+    logger.info("[enrichment] using provider=openai model=%s endpoint=%s", LLM_MODEL, LLM_ENDPOINT)
 else:
     client = anthropic.Anthropic(api_key=LLM_API_KEY)
     logger.info("[enrichment] using provider=anthropic model=%s", LLM_MODEL) 
@@ -21,6 +23,7 @@ SYSTEM_PROMPT = """You are a B2B sales intelligence agent. Given a company domai
 
 You must return a JSON object with exactly these fields:
 {
+  "company_name": "<string — the company name derived from the domain. REQUIRED. Do NOT leave empty.>",
   "employee_count": <integer or null>,
   "employee_range": "<string or null>",
   "industry": "<string>",
@@ -56,9 +59,11 @@ USER_PROMPT = """Research this lead:
 Domain: {domain}
 Contact: {contact_name} ({email})
 
-1. Search: "{domain}" site:linkedin.com/in employees people — find who works there
-2. Search: "{domain}" company information number of employees industry
-3. From the results, find {contact_name} and include ONLY them in profiles.
+1. Determine the company name from the domain — if the domain is "intecbusiness.co.uk", the company is likely "inTEC Business" or similar.
+2. Search: "{domain}" site:linkedin.com/in employees people — find who works there
+3. Search: "{domain}" company information number of employees industry
+4. From the results, find {contact_name} and include ONLY them in profiles.
+5. Set "company_name" to the actual company name you discovered (never leave it empty — use the domain to infer if needed).
 
 Return the JSON only. No explanation."""
 
@@ -74,6 +79,8 @@ def run(company: str, domain: str, contact_name: str = "", email: str = "") -> d
         try:
             if LLM_PROVIDER == "google":
                 result_text, metadata = _call_gemini(prompt)
+            elif LLM_PROVIDER == "openai":
+                result_text, metadata = _call_openai(prompt, domain)
             else:
                 result_text, metadata = _call_anthropic(prompt)
 
@@ -97,6 +104,16 @@ def run(company: str, domain: str, contact_name: str = "", email: str = "") -> d
         except (anthropic.APIError, anthropic.RateLimitError) as e:
             retryable = True
             err_msg = f"Anthropic API: {str(e)[:100]}"
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code
+            retryable = status in (429, 500, 502, 503)
+            err_msg = f"HTTP {status}: {str(e)[:100]}"
+        except httpx.TimeoutException as e:
+            retryable = True
+            err_msg = f"Timeout: {str(e)[:100]}"
+        except httpx.ConnectError as e:
+            retryable = True
+            err_msg = f"Connection refused: {str(e)[:100]}"
         except json.JSONDecodeError:
             logger.error("[enrichment] company=%s domain=%s — could not parse LLM response", company, domain)
             return _fallback("could not parse LLM response")
@@ -175,6 +192,105 @@ def _call_gemini(prompt: str) -> tuple:
     return _extract_json(text), metadata
 
 
+def _search_tavily(query: str, max_results: int = 5) -> list:
+    """Search the web via Tavily API and return a list of result dicts."""
+    if not TAVILY_API_KEY:
+        logger.warning("[tavily] TAVILY_API_KEY not set — skipping web search")
+        return []
+    try:
+        resp = httpx.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": TAVILY_API_KEY,
+                "query": query,
+                "search_depth": "advanced",
+                "max_results": max_results,
+                "include_answer": False,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("results", [])
+        logger.info("[tavily] query=%s — %d results", query, len(results))
+        return results
+    except Exception as e:
+        logger.warning("[tavily] query=%s — search failed: %s", query, str(e)[:100])
+        return []
+
+
+def _call_openai(prompt: str, domain: str = "") -> tuple:
+    """Call an OpenAI-compatible endpoint (local LLM). Returns (json_text, metadata_dict).
+
+    Because local models don't have built-in web search, we first gather
+    context via Tavily, then feed it into the LLM prompt.
+    """
+    # 1. Gather search context via Tavily
+    search_domain = domain.strip() if domain else MODEL
+    search_queries = [
+        f"{search_domain} company information number of employees industry",
+        f"{search_domain} employees LinkedIn",
+    ]
+    all_sources = []
+    for q in search_queries:
+        results = _search_tavily(q, max_results=4)
+        all_sources.extend(results)
+
+    # 2. Build an enriched prompt with the search results
+    search_context = ""
+    uris = []
+    for i, r in enumerate(all_sources[:12], 1):
+        title = r.get("title", "")
+        snippet = r.get("content", "") or r.get("snippet", "")
+        url = r.get("url", "")
+        if url:
+            uris.append(url)
+        search_context += f"\n[{i}] {title}\n    URL: {url}\n    {snippet}\n"
+
+    enriched_prompt = f"""{prompt}
+
+--- WEB SEARCH RESULTS ---
+{search_context or "No search results found."}
+--- END SEARCH RESULTS ---
+
+Based on the search results above, return the JSON only. No explanation."""
+
+    # 3. Call the OpenAI-compatible endpoint
+    payload = {
+        "model": MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": enriched_prompt},
+        ],
+        "max_tokens": 2048,
+        "temperature": 0,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LLM_API_KEY}",
+    }
+
+    resp = httpx.post(LLM_ENDPOINT, headers=headers, json=payload, timeout=120)
+    resp.raise_for_status()
+    data = resp.json()
+
+    # 4. Extract text from OpenAI-style response
+    choices = data.get("choices", [])
+    text = choices[0].get("message", {}).get("content", "") if choices else ""
+
+    metadata = {
+        "search_queries": search_queries,
+        "sources": [{"uri": u} for u in uris],
+    }
+
+    if search_queries:
+        logger.info("[enrichment:search] queries=%s", search_queries)
+    if uris:
+        logger.info("[enrichment:search] sources=%d — %s", len(uris), uris[:5])
+
+    return _extract_json(text), metadata
+
+
 def _extract_json(text: str) -> str:
     """Extract JSON object from LLM response — handles fences and preamble."""
     import re
@@ -215,6 +331,7 @@ def _is_fatal(e: Exception) -> bool:
 def _validate(data: dict) -> dict:
     """Ensure all required keys are present with safe defaults."""
     return {
+        "company_name": (data.get("company_name") or "").strip(),
         "employee_count": data.get("employee_count"),
         "employee_range": data.get("employee_range"),
         "industry": data.get("industry", "Unknown"),
@@ -228,6 +345,7 @@ def _validate(data: dict) -> dict:
 
 def _fallback(reason: str) -> dict:
     return {
+        "company_name": "",
         "employee_count": None,
         "employee_range": None,
         "industry": "Unknown",

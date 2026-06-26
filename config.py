@@ -13,10 +13,17 @@ _PROVIDER_CONFIG = {
     "anthropic": {
         "api_key": os.getenv("ANTHROPIC_API_KEY", ""),
         "model": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+        "endpoint": "",  # uses Anthropic's default
     },
     "google": {
         "api_key": os.getenv("GOOGLE_API_KEY", ""),
         "model": os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"),
+        "endpoint": "",  # uses Google's default
+    },
+    "openai": {
+        "api_key": os.getenv("OPENAI_API_KEY", ""),
+        "model": os.getenv("OPENAI_MODEL", "Qwen3-Coder-30B-A3B-Instruct"),
+        "endpoint": os.getenv("OPENAI_ENDPOINT", "http://45.63.38.248:9000/v1/chat/completions"),
     },
 }
 
@@ -29,9 +36,13 @@ if _active is None:
 LLM_API_KEY = _active["api_key"]
 LLM_MODEL = _active["model"]
 
+# -- Resolve endpoint for OpenAI-compatible providers ------------------
+LLM_ENDPOINT = _active.get("endpoint", "")
+
 # -- Backward compat aliases -------------------------------------------
 ANTHROPIC_API_KEY = _PROVIDER_CONFIG["anthropic"]["api_key"]
 GOOGLE_API_KEY = _PROVIDER_CONFIG["google"]["api_key"]
+OPENAI_API_KEY = _PROVIDER_CONFIG["openai"]["api_key"]
 
 # -- Zoho CRM Webhook --------------------------------------------------
 ZOHO_WEBHOOK_SECRET = os.getenv("ZOHO_WEBHOOK_SECRET", "")
@@ -49,14 +60,22 @@ TEST_EMAIL = os.getenv("TEST_EMAIL", "")
 MODE = os.getenv("MODE", "dev").lower()
 SENTRY_DSN = os.getenv("SENTRY_DSN", "")
 
+# -- Web Search (Tavily) -----------------------------------------------
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
+
 
 def validate_config():
     """Validate required config based on the active LLM provider."""
     if LLM_PROVIDER == "google":
         required = {"ZOHO_WEBHOOK_SECRET": ZOHO_WEBHOOK_SECRET, "GOOGLE_API_KEY": GOOGLE_API_KEY}
+    elif LLM_PROVIDER == "openai":
+        required = {"ZOHO_WEBHOOK_SECRET": ZOHO_WEBHOOK_SECRET, "OPENAI_API_KEY": OPENAI_API_KEY}
     else:
         required = {"ZOHO_WEBHOOK_SECRET": ZOHO_WEBHOOK_SECRET, "ANTHROPIC_API_KEY": ANTHROPIC_API_KEY}
     missing = [n for n, v in required.items() if not v]
     if missing:
         raise RuntimeError("Missing required env vars: " + ", ".join(missing) + ". Set them in .env")
-    return [n for n in ["SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "ALERT_RECIPIENT_EMAIL"] if not os.getenv(n)]
+    optional_missing = [n for n in ["SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "ALERT_RECIPIENT_EMAIL"] if not os.getenv(n)]
+    if not TAVILY_API_KEY and LLM_PROVIDER == "openai":
+        optional_missing.append("TAVILY_API_KEY (web search disabled for openai provider)")
+    return optional_missing

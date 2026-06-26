@@ -17,6 +17,7 @@ build/
 *.db.bak
 
 # Logs
+logs/
 *.log
 
 # Zip artifacts
