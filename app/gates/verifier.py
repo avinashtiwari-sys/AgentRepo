@@ -6,17 +6,27 @@ from app.logging_config import logger
 def run(lead: Lead, db: Session) -> bool:
     """
     Gate 2: company verifier — strict.
-    Rejects leads where AI enrichment found no web presence or the company
-    is identified as a competitor.
+    Rejects leads where AI enrichment found no web presence, the company
+    is identified as a competitor, or the contact is flagged as spam/fake.
     """
     web_presence = lead.enrichment.get("web_presence")
     is_competitor = lead.enrichment.get("is_competitor")
+    is_spam = lead.enrichment.get("is_spam")
     sources = lead.enrichment.get("sources", [])
 
     logger.info(
-        "[gate:verifier] lead_id=%s company=%s web_presence=%s is_competitor=%s sources=%s",
-        lead.id, lead.company, web_presence, is_competitor, sources,
+        "[gate:verifier] lead_id=%s company=%s web_presence=%s is_competitor=%s is_spam=%s sources=%s",
+        lead.id, lead.company, web_presence, is_competitor, is_spam, sources,
     )
+
+    # ── Reject spam / fake contacts ─────────────────────────────────
+    if is_spam:
+        logger.warning(
+            "[gate:verifier] lead_id=%s company=%s — REJECTED (flagged as spam or fake contact)",
+            lead.id, lead.company,
+        )
+        lead.set_status(LeadStatus.INVALID_COMPANY, db=db)
+        return False
 
     # ── Reject competitors ──────────────────────────────────────────
     if is_competitor:
@@ -27,38 +37,67 @@ def run(lead: Lead, db: Session) -> bool:
         lead.set_status(LeadStatus.INVALID_COMPANY, db=db)
         return False
 
-    # ── Reject leads with no discoverable web presence ──────────────
+    # ── Weak web presence → REVIEW, don't drop ─────────────────────
+    # The domain already passed Gate 1 (real business domain, MX + web check),
+    # so a missing web_presence/sources here means the enrichment model could
+    # not corroborate the company — not that the company is fake. Hard-rejecting
+    # would silently lose genuine leads (e.g. real employees the model can't
+    # find online), so route to human REVIEW instead.
     if not web_presence or not sources:
         logger.warning(
-            "[gate:verifier] lead_id=%s company=%s — REJECTED (no web presence found)",
+            "[gate:verifier] lead_id=%s company=%s — REVIEW (enrichment found no web presence; needs manual check)",
             lead.id, lead.company,
         )
-        lead.set_status(LeadStatus.INVALID_COMPANY, db=db)
+        lead.set_status(LeadStatus.REVIEW, db=db)
         return False
 
     # ── Domain-company name sanity check ───────────────────────────
     # The resolved company name should relate to the domain.
     # e.g. "intecbusiness.co.uk" → "Intec Business Solutions" ✓
-    #      "gluak.com"          → "Glu Mobile"              ✗ (hallucination)
-    _MIN_MATCH = 4
     company_name = (lead.enrichment.get("company_name") or "").strip()
     if company_name:
+        import difflib
         domain_lower = lead.domain.lower()
         domain_sld = domain_lower.split(".")[0]  # "intecbusiness" from "intecbusiness.co.uk"
-        company_norm = company_name.lower().replace("limited", "").replace("ltd", "").replace("inc", "").replace("llc", "").strip()
+        
+        # Clean company name
+        for suffix in [" limited", " ltd", " inc", " llc", " corp", " corporation"]:
+            if company_name.lower().endswith(suffix):
+                company_name = company_name[:len(company_name)-len(suffix)]
+        company_norm = company_name.lower().strip()
+        company_nospaces = company_norm.replace(" ", "")
+        
+        # 1. Exact match (ignoring spaces)
+        is_exact = (domain_sld == company_nospaces)
+        
+        # 2. First word matches SLD exactly (e.g. "apple" == "apple")
         company_first = company_norm.split()[0] if company_norm.split() else ""
+        is_first_word = (domain_sld == company_first and len(domain_sld) >= 3)
+        
+        # 3. Domain SLD is formed by first N words of company (e.g. "intecbusiness" == "intec" + "business")
+        words = company_norm.split()
+        is_word_combination = False
+        prefix = ""
+        for w in words:
+            prefix += w
+            if prefix == domain_sld:
+                is_word_combination = True
+                break
+                
+        # 4. Domain is acronym of the company (e.g. "ibm" for "international business machines")
+        acronym = "".join([w[0] for w in company_norm.split() if w])
+        is_acronym = (domain_sld == acronym and len(acronym) > 1)
+        
+        # 5. Very high string similarity (e.g. catches minor typos but rejects completely different words)
+        similarity = difflib.SequenceMatcher(None, domain_sld, company_nospaces).ratio()
+        is_highly_similar = similarity > 0.85
 
-        # Check mutual substring containment with minimum length
-        sld_in_company = len(domain_sld) >= _MIN_MATCH and domain_sld in company_norm
-        company_in_sld = len(company_first) >= _MIN_MATCH and company_first in domain_lower
-        company_in_domain = len(company_norm) >= _MIN_MATCH and company_norm in domain_lower
-
-        if not (sld_in_company or company_in_sld or company_in_domain):
+        if not (is_exact or is_first_word or is_word_combination or is_acronym or is_highly_similar):
             logger.warning(
-                "[gate:verifier] lead_id=%s company=%s domain=%s — REJECTED (company name '%s' does not match domain)",
+                "[gate:verifier] lead_id=%s company=%s domain=%s — REVIEW (company name '%s' does not match domain; needs manual check)",
                 lead.id, lead.company, lead.domain, company_name,
             )
-            lead.set_status(LeadStatus.INVALID_COMPANY, db=db)
+            lead.set_status(LeadStatus.REVIEW, db=db)
             return False
 
     logger.info(

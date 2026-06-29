@@ -4,6 +4,7 @@ import httpx
 import anthropic
 from config import LLM_PROVIDER, LLM_API_KEY, LLM_MODEL, LLM_ENDPOINT, TAVILY_API_KEY
 from app.logging_config import logger
+from app.enrichment.company_cache import COMPANY_FIELDS
 
 # ── Provider setup ────────────────────────────────────────────────────
 # LLM_PROVIDER selects the provider. LLM_MODEL and LLM_API_KEY are
@@ -29,6 +30,7 @@ You must return a JSON object with exactly these fields:
   "industry": "<string>",
   "web_presence": <true/false>,
   "is_competitor": <true/false>,
+  "is_spam": <true/false>,
   "confidence": "high" | "med" | "low",
   "sources": ["<url>"],
   "profiles": [
@@ -65,6 +67,18 @@ Confidence rules:
 - high: employee count confirmed from 2+ sources
 - med: employee count from 1 source
 - low: no reliable headcount data
+
+Spam / fake-contact rules — flag ONLY on positive evidence of fakeness:
+- Set "is_spam": true ONLY when you have a concrete signal that the contact or domain is fake:
+  * The email local-part (before the @) is clearly auto-generated, random, or junk — e.g.
+    "asdf", "fbn990", "duskstag783", keyboard mashing, or random letter/number strings.
+  * The company domain itself is a spam, disposable, parked, or obviously made-up domain.
+  * Your search results affirmatively contradict the contact — e.g. the name belongs to a
+    completely different, unrelated entity, or the domain resolves to a scam/parked page.
+- DO NOT set "is_spam": true merely because you could not find the person. Most real employees
+  do not appear in a quick web search. Absence of evidence is NOT evidence of fakeness.
+- When unsure, leave "is_spam": false and reflect your uncertainty in "confidence" instead.
+- "web_presence" describes the COMPANY, not the contact — set it true if the company is real.
 """
 
 USER_PROMPT = """Research this lead:
@@ -84,8 +98,13 @@ Contact: {contact_name} ({email})
 Return the JSON only. No explanation."""
 
 
-def run(company: str, domain: str, contact_name: str = "", email: str = "") -> dict:
-    """Call LLM with web search to extract company size, industry, and confidence."""
+def run(company: str, domain: str, contact_name: str = "", email: str = "", company_context: dict = None) -> dict:
+    """Call LLM with web search to extract company size, industry, and confidence.
+
+    When ``company_context`` is provided (a cached company-level enrichment for
+    this domain), the company-level fields are reused as authoritative and the
+    redundant company web searches are skipped — only the per-person lookup runs.
+    """
     max_retries = 3
     retry_delay = 2
 
@@ -96,12 +115,19 @@ def run(company: str, domain: str, contact_name: str = "", email: str = "") -> d
             if LLM_PROVIDER == "google":
                 result_text, metadata = _call_gemini(prompt)
             elif LLM_PROVIDER == "openai":
-                result_text, metadata = _call_openai(prompt, domain, contact_name, email)
+                result_text, metadata = _call_openai(prompt, domain, contact_name, email, company_context=company_context)
             else:
                 result_text, metadata = _call_anthropic(prompt)
 
             data = json.loads(result_text)
             result = _validate(data)
+
+            # Reuse cached company facts as authoritative (person fields stay fresh).
+            if company_context:
+                for k in COMPANY_FIELDS:
+                    val = company_context.get(k)
+                    if val is not None:
+                        result[k] = val
 
             # Inject search metadata into the result
             if metadata.get("search_queries"):
@@ -235,18 +261,24 @@ def _search_tavily(query: str, max_results: int = 5) -> list:
         return []
 
 
-def _call_openai(prompt: str, domain: str = "", contact_name: str = "", email: str = "") -> tuple:
+def _call_openai(prompt: str, domain: str = "", contact_name: str = "", email: str = "", company_context: dict = None) -> tuple:
     """Call an OpenAI-compatible endpoint (local LLM). Returns (json_text, metadata_dict).
 
     Because local models don't have built-in web search, we first gather
-    context via Tavily, then feed it into the LLM prompt.
+    context via Tavily, then feed it into the LLM prompt. When company facts are
+    already cached (``company_context``), the company-level searches are skipped
+    and only the per-person searches run.
     """
     # 1. Gather search context via Tavily
     search_domain = domain.strip() if domain else MODEL
-    search_queries = [
-        f"{search_domain} company information number of employees industry",
-        f"{search_domain} employees LinkedIn",
-    ]
+    # Skip the company searches on a cache hit — we already have the company facts.
+    if company_context:
+        search_queries = []
+    else:
+        search_queries = [
+            f"{search_domain} company information number of employees industry",
+            f"{search_domain} employees LinkedIn",
+        ]
     # Add person searches across multiple platforms
     person_name = contact_name.strip() if contact_name else ""
     if person_name:
@@ -255,6 +287,12 @@ def _call_openai(prompt: str, domain: str = "", contact_name: str = "", email: s
             f'"{person_name}" "{search_domain}" twitter',
             f'"{person_name}" "{search_domain}" github',
         ])
+    
+    # Also search for the email username (the client/user part) to verify authenticity
+    email_username = email.split("@")[0].strip() if email and "@" in email else ""
+    if email_username and email_username.lower() not in ["info", "sales", "contact", "support", "admin", "hello"]:
+        search_queries.append(f'"{email_username}" "{search_domain}" employee OR profile')
+        
     all_sources = []
     for q in search_queries:
         results = _search_tavily(q, max_results=4)
@@ -361,6 +399,7 @@ def _validate(data: dict) -> dict:
         "industry": data.get("industry", "Unknown"),
         "web_presence": bool(data.get("web_presence", False)),
         "is_competitor": bool(data.get("is_competitor", False)),
+        "is_spam": bool(data.get("is_spam", False)),
         "confidence": data.get("confidence", "low") if data.get("confidence") in ("high", "med", "low") else "low",
         "sources": data.get("sources", []),
         "profiles": data.get("profiles", []),
@@ -375,6 +414,7 @@ def _fallback(reason: str) -> dict:
         "industry": "Unknown",
         "web_presence": False,
         "is_competitor": False,
+        "is_spam": False,
         "confidence": "low",
         "sources": [],
         "profiles": [],

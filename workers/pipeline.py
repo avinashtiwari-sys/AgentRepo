@@ -2,6 +2,7 @@ from models.database import SessionLocal
 from models.lead import Lead, LeadStatus
 from app.gates import domain, verifier, confidence
 from app.enrichment import agent
+from app.enrichment import company_cache
 from app.notify import router as notify_router
 from app.logging_config import logger
 
@@ -21,7 +22,7 @@ def run_pipeline(lead_id: str):
         )
 
         # Reject Apollo-sourced leads — no enrichment, no routing
-        if lead.lead_source and lead.lead_source.strip().lower() == "apollo":
+        if lead.lead_source and "apollo" in lead.lead_source.strip().lower():
             lead.set_status(LeadStatus.SKIPPED, db=db)
             logger.warning(
                 "[pipeline] lead_id=%s company=%s email=%s source=%s — REJECTED (Apollo-sourced leads are not processed)",
@@ -39,9 +40,20 @@ def run_pipeline(lead_id: str):
             lead.id, lead.company, lead.domain,
         )
         contact_name = f"{lead.first_name} {lead.last_name}".strip() or lead.email.split("@")[0]
-        enrichment = agent.run(lead.domain, lead.domain, contact_name=contact_name, email=lead.email)
+        # Reuse cached company facts for this domain if still fresh; only the
+        # per-person lookup runs anew.
+        cached_company = company_cache.get_fresh(lead.domain, db)
+        enrichment = agent.run(
+            lead.domain, lead.domain,
+            contact_name=contact_name, email=lead.email,
+            company_context=cached_company,
+        )
         lead.enrichment_data = enrichment
         lead.set_status(LeadStatus.ENRICHING, db=db)
+
+        # Refresh the domain cache when this was a fresh (uncached) lookup.
+        if not cached_company:
+            company_cache.upsert(lead.domain, enrichment, db)
 
         # If Zoho didn't provide a company name, fill it from enrichment
         if not lead.company or lead.company.strip() == "":
@@ -89,7 +101,20 @@ def run_pipeline(lead_id: str):
         )
 
     except Exception:
+        # Log, flag the lead for review, then re-raise so RQ records the failure
+        # and applies its retry/backoff policy. Swallowing here would mark the job
+        # "succeeded" and defeat retries + the dead-letter (FailedJobRegistry).
         logger.exception("[pipeline] lead_id=%s — unhandled exception in pipeline", lead_id)
+        try:
+            lead = db.query(Lead).filter(Lead.id == lead_id).first()
+            if lead and lead.status not in (
+                LeadStatus.MQL_VALID, LeadStatus.ROUTED,
+                LeadStatus.INVALID_DOMAIN, LeadStatus.INVALID_COMPANY,
+            ):
+                lead.set_status(LeadStatus.REVIEW, db=db)
+        except Exception:
+            logger.exception("[pipeline] lead_id=%s — could not flag lead for review", lead_id)
+        raise
 
     finally:
         db.close()

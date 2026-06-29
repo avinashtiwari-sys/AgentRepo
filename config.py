@@ -63,6 +63,11 @@ SENTRY_DSN = os.getenv("SENTRY_DSN", "")
 # -- Web Search (Tavily) -----------------------------------------------
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 
+# -- Company enrichment cache ------------------------------------------
+# How long (days) a cached company-level enrichment stays fresh before a
+# lead from that domain triggers a refresh. Set to 0 to disable the cache.
+COMPANY_CACHE_TTL_DAYS = int(os.getenv("COMPANY_CACHE_TTL_DAYS", "30"))
+
 
 def validate_config():
     """Validate required config based on the active LLM provider."""
