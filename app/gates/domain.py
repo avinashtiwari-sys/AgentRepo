@@ -116,7 +116,14 @@ def _has_mx_record(domain: str) -> bool:
 
 @lru_cache(maxsize=1024)
 def _quick_web_check(domain: str) -> bool:
-    """Quick Tavily search to see if the domain belongs to a known company."""
+    """Quick Tavily search to see if the domain belongs to a known company.
+
+    STRICT matching — the domain (or its SLD) MUST appear in a result URL,
+    not just in page text content. This prevents "premiumlist.net" from
+    falsely matching search results about a different company like
+    "platinumlist.net" whose content coincidentally contains the substring
+    "premiumlist".
+    """
     if not TAVILY_API_KEY:
         logger.warning("[gate:domain] TAVILY_API_KEY not set — skipping web check for %s", domain)
         return True  # can't verify, let it pass to avoid false rejections
@@ -140,28 +147,30 @@ def _quick_web_check(domain: str) -> bool:
             logger.info("[gate:domain] domain=%s — no web results found", domain)
             return False
 
-        # Check if any result's URL or content mentions this domain
+        # Strict check: the domain MUST appear in a result URL, not just content.
+        # Content substring matches are unreliable — they cause "premiumlist" to
+        # match pages about "platinumlist" or any unrelated text.
         domain_lower = domain.lower()
-        sld = _registrable_label(domain_lower)  # "nac" from "nac.gov.sg"
+        sld = _registrable_label(domain_lower)
 
         for r in results:
             url = (r.get("url") or "").lower()
-            content = (r.get("content") or "").lower()
-            title = (r.get("title") or "").lower()
-            full_text = f"{url} {content} {title}"
 
-            if domain_lower in full_text:
+            if domain_lower in url:
                 return True
-            # Longer labels are distinctive enough to match anywhere in the result.
-            if len(sld) >= 4 and sld in full_text:
-                return True
-            # Short labels (e.g. "nac") are too generic to match free text, but a
-            # hit inside the result URL/host is a reliable signal.
-            if len(sld) == 3 and sld in url:
+            # Also check SLD in URL — catches subdomain variations like
+            # "www.premiumlist.net" inside "https://www.premiumlist.net/about"
+            if sld in url:
                 return True
 
-        # Results exist but nothing matches — suspicious
-        logger.info("[gate:domain] domain=%s — %d web results found but none reference the domain", domain, len(results))
+        # Results exist but nothing references the domain in its URL — suspicious.
+        # This catches impersonation where a typosquat domain (premiumlist.net)
+        # gets search results for the real company (platinumlist.net) but the
+        # real company's URLs don't contain the typosquatted domain name.
+        logger.info(
+            "[gate:domain] domain=%s — %d web results found but none reference the domain in URLs",
+            domain, len(results),
+        )
         return False
     except Exception as e:
         logger.warning("[gate:domain] web check failed for %s: %s", domain, str(e)[:80])
@@ -180,6 +189,50 @@ def _suspicious_tld(domain: str) -> bool:
     """Is the domain's TLD one commonly abused for throwaway signups?"""
     tld = domain.rsplit(".", 1)[-1].lower() if "." in domain else ""
     return tld in _SUSPICIOUS_TLDS
+
+
+def _check_impersonation(domain: str, db):
+    """Check if the domain impersonates a known legitimate company domain.
+
+    Uses edit distance (SequenceMatcher ratio) to detect typosquatting,
+    character swaps, added/missing characters, and other lookalike techniques.
+    For example, ``premiumlist.net`` impersonating ``platinumlist.net`` would
+    have high similarity (>0.7) but not be an exact match.
+
+    Returns a warning string if impersonation is suspected, else None.
+    """
+    import difflib
+
+    domain_sld = _registrable_label(domain.lower())
+    if not domain_sld or len(domain_sld) < 4:
+        return None  # too short to reliably detect impersonation
+
+    try:
+        from models.company import CompanyEnrichment
+        cached_domains = db.query(CompanyEnrichment.domain).all()
+    except Exception:
+        return None  # no cache available, skip check
+
+    for (cached_domain,) in cached_domains:
+        if not cached_domain or cached_domain.lower() == domain.lower():
+            continue
+        cached_sld = _registrable_label(cached_domain)
+        if not cached_sld or len(cached_sld) < 4:
+            continue
+
+        # Avoid comparing against completely unrelated domains
+        if abs(len(domain_sld) - len(cached_sld)) > 3:
+            continue
+
+        ratio = difflib.SequenceMatcher(None, domain_sld, cached_sld).ratio()
+        if 0.65 <= ratio < 1.0:
+            return (
+                f"domain '{domain}' (SLD='{domain_sld}') closely resembles "
+                f"known domain '{cached_domain}' (SLD='{cached_sld}', "
+                f"similarity={ratio:.0%}) — possible impersonation/typosquatting"
+            )
+
+    return None
 
 
 @lru_cache(maxsize=1024)
@@ -230,11 +283,14 @@ def _matches_lead_name(local_part: str, first_name: str, last_name: str) -> bool
     return False
 
 
-def verify_company(domain: str) -> dict:
+def verify_company(domain: str, db=None) -> dict:
     """Parameter set answering: is the COMPANY behind this domain genuine?
 
     Returns a dict of named signals plus an overall ``genuine`` verdict and a
     ``reason`` when it is not genuine.
+
+    When a ``db`` session is provided, also checks for domain impersonation
+    (typosquatting) against the cache of known legitimate company domains.
     """
     domain = (domain or "").lower()
     params = {
@@ -256,6 +312,16 @@ def verify_company(domain: str) -> dict:
         reason = "no MX record — not a valid business domain"
     elif not (params["web_presence"] or (params["website_reachable"] and not params["suspicious_tld"])):
         reason = "web lookup could not confirm this is a real company domain"
+
+    # ── Impersonation check (typosquatting detection) ──────────────
+    if reason is None and db is not None:
+        impersonation_warning = _check_impersonation(domain, db)
+        if impersonation_warning:
+            logger.warning(
+                "[gate:company] lead_id=N/A domain=%s — IMPERSONATION SUSPECTED: %s",
+                domain, impersonation_warning,
+            )
+            reason = impersonation_warning
 
     params["genuine"] = reason is None
     params["reason"] = reason
@@ -299,46 +365,29 @@ def run(lead: Lead, db: Session) -> bool:
         lead.id, lead.domain,
     )
 
-    if not lead.domain:
-        logger.warning(
-            "[gate:domain] lead_id=%s — REJECTED (no domain extracted from email)",
-            lead.id,
-        )
-        lead.set_status(LeadStatus.INVALID_DOMAIN, db=db)
-        return False
-
-    # ── Check 2 (cheap, no network): is the USER a real individual? ──
-    local_part = (lead.email or "").split("@")[0]
-    user = verify_user(local_part, lead.first_name, lead.last_name)
+    # ── User verification (cheap, no network) ──────────────────────
+    user_params = verify_user(lead.email.split("@")[0], lead.first_name, lead.last_name)
     logger.info(
         "[gate:user] lead_id=%s email=%s params=%s",
-        lead.id, lead.email, user,
+        lead.id, lead.email, user_params,
     )
-    if not user["genuine"]:
-        logger.warning(
-            "[gate:user] lead_id=%s email=%s — REJECTED (%s)",
-            lead.id, lead.email, user["reason"],
-        )
-        lead.set_status(LeadStatus.INVALID_DOMAIN, db=db)
+    if not user_params["genuine"]:
+        mark_failed(lead, db, status=LeadStatus.INVALID_DOMAIN, tag="user", reason=user_params["reason"])
         return False
 
-    # ── Check 1 (network): is the COMPANY/domain genuine? ───────────
-    domain_lower = lead.domain.lower()
-    company = verify_company(domain_lower)
+    # ── Company verification (network calls + impersonation check) ──
+    company_params = verify_company(lead.domain, db=db)
     logger.info(
         "[gate:company] lead_id=%s domain=%s params=%s",
-        lead.id, domain_lower, company,
+        lead.id, lead.domain, company_params,
     )
-    if not company["genuine"]:
-        logger.warning(
-            "[gate:company] lead_id=%s domain=%s — REJECTED (%s)",
-            lead.id, domain_lower, company["reason"],
-        )
-        lead.set_status(LeadStatus.INVALID_DOMAIN, db=db)
+    if not company_params["genuine"]:
+        mark_failed(lead, db, status=LeadStatus.INVALID_DOMAIN, tag="company", reason=company_params["reason"])
         return False
 
     logger.info(
         "[gate:domain] lead_id=%s domain=%s — PASSED (company + user verified)",
-        lead.id, domain_lower,
+        lead.id, lead.domain,
     )
     return True
+
