@@ -235,9 +235,30 @@ def _check_impersonation(domain: str, db):
     return None
 
 
+# Known domain parking / aftermarket services — if a domain redirects to one
+# of these, it is not a real company website.
+_PARKING_HOSTS = {
+    "godaddy.com", "sedo.com", "afternic.com", "hugedomains.com",
+    "buydomains.com", "domainmarket.com", "fabulous.com", "parkingcrew.net",
+    "bodis.com", "parklogic.com", "domainsponsor.com",
+}
+
+# Snippets that appear verbatim on parked/placeholder pages.
+_PARKING_SNIPPETS = (
+    "domain parking", "parked domain", "this domain is parked",
+    "domain is for sale", "buy this domain", "this web page is parked",
+    "godaddy parked", "parked free",
+)
+
+
 @lru_cache(maxsize=1024)
 def _website_reachable(domain: str) -> bool:
-    """Does the domain serve a live website (HTTP < 500 on https or http)?"""
+    """Does the domain serve a real, non-parked company website?
+
+    A domain that answers HTTP 200 is NOT sufficient — GoDaddy parking pages,
+    domain-aftermarket landers, and "Coming Soon" placeholders all return 200
+    but are not genuine company sites.
+    """
     for scheme in ("https://", "http://"):
         try:
             resp = httpx.get(
@@ -246,8 +267,46 @@ def _website_reachable(domain: str) -> bool:
                 follow_redirects=True,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; gtmflow/1.0)"},
             )
-            if resp.status_code < 500:
-                return True
+            if resp.status_code >= 500:
+                continue
+
+            # ── Redirected to a known parking / aftermarket service? ──────
+            final_host = (str(resp.url).lower().split("/")[2]
+                          if len(str(resp.url).split("/")) > 2 else "")
+            if any(h in final_host for h in _PARKING_HOSTS):
+                logger.info(
+                    "[gate:company] domain=%s — redirected to parking service (%s)",
+                    domain, final_host,
+                )
+                continue
+
+            body = (resp.text or "")[:8192].lower()
+
+            # ── Tiny page with no substance → parked or placeholder ───────
+            if len(resp.text or "") < 800:
+                logger.info(
+                    "[gate:company] domain=%s — tiny page (%dB), likely parked",
+                    domain, len(resp.text or ""),
+                )
+                continue
+
+            # ── Known parking‑page text signatures ────────────────────────
+            if any(snippet in body for snippet in _PARKING_SNIPPETS):
+                logger.info(
+                    "[gate:company] domain=%s — parked-domain text detected",
+                    domain,
+                )
+                continue
+
+            # ── "Coming Soon" / "Under Construction" with no other content ─
+            if ("coming soon" in body or "under construction" in body) and len(resp.text or "") < 4096:
+                logger.info(
+                    "[gate:company] domain=%s — 'coming soon' placeholder, no real content",
+                    domain,
+                )
+                continue
+
+            return True
         except Exception:
             continue
     return False
@@ -354,6 +413,15 @@ def verify_user(local_part: str, first_name: str = "", last_name: str = "") -> d
     return params
 
 
+def _mark_failed(lead: Lead, db: Session, *, tag: str, reason: str) -> None:
+    """Record a domain/user verification failure and persist it."""
+    lead.set_status(LeadStatus.INVALID_DOMAIN, db=db)
+    logger.warning(
+        "[gate:domain] lead_id=%s FAILED tag=%s reason=%s",
+        lead.id, tag, reason,
+    )
+
+
 def run(lead: Lead, db: Session) -> bool:
     """
     Gate 1: verify the lead by two independent parameter sets —
@@ -372,7 +440,7 @@ def run(lead: Lead, db: Session) -> bool:
         lead.id, lead.email, user_params,
     )
     if not user_params["genuine"]:
-        mark_failed(lead, db, status=LeadStatus.INVALID_DOMAIN, tag="user", reason=user_params["reason"])
+        _mark_failed(lead, db, tag="user", reason=user_params["reason"])
         return False
 
     # ── Company verification (network calls + impersonation check) ──
@@ -382,7 +450,7 @@ def run(lead: Lead, db: Session) -> bool:
         lead.id, lead.domain, company_params,
     )
     if not company_params["genuine"]:
-        mark_failed(lead, db, status=LeadStatus.INVALID_DOMAIN, tag="company", reason=company_params["reason"])
+        _mark_failed(lead, db, tag="company", reason=company_params["reason"])
         return False
 
     logger.info(
