@@ -68,12 +68,78 @@ echo "==> Applying database migrations..."
 alembic upgrade head
 
 # ---------------------------------------------------------------------------
+# Clean up any lingering processes from a previous run (zombie workers, stale
+# uvicorn instances, etc.) before starting fresh. This prevents the "multiple
+# workers / no worker / port in use" bugs that happen on repeated restarts.
+PIDFILE_WORKER="/tmp/gtmflow-worker.pid"
+PIDFILE_WEB="/tmp/gtmflow-web.pid"
+
+kill_existing() {
+    local name="$1" pidfile="$2" pattern="$3" pids
+    if [ -f "$pidfile" ]; then
+        local old_pid
+        old_pid=$(cat "$pidfile" 2>/dev/null || echo "")
+        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+            echo "==> Stopping old $name (PID $old_pid)..."
+            kill "$old_pid" 2>/dev/null || true
+            # Wait up to 5s for clean shutdown
+            for _ in $(seq 1 5); do
+                kill -0 "$old_pid" 2>/dev/null || break
+                sleep 1
+            done
+            kill -9 "$old_pid" 2>/dev/null || true
+        fi
+    fi
+    # Also kill any orphaned processes (handles stale pids or manual launches)
+    pids=$(pgrep -f "$pattern" 2>/dev/null || true)
+    if [ -n "$pids" ]; then
+        echo "==> Cleaning up stray $name processes: $pids"
+        kill $pids 2>/dev/null || true
+        sleep 1
+        pids=$(pgrep -f "$pattern" 2>/dev/null || true)
+        [ -n "$pids" ] && kill -9 $pids 2>/dev/null || true
+    fi
+}
+
+kill_existing "rq worker" "$PIDFILE_WORKER" "rq worker pipeline"
+kill_existing "uvicorn" "$PIDFILE_WEB" "uvicorn app.main:app"
+
+# Small delay so the port is definitely released before uvicorn binds
+sleep 1
+
+# ---------------------------------------------------------------------------
 echo "==> Starting background worker..."
 rq worker pipeline &
 WORKER_PID=$!
-
-# Clean up the worker if the web server exits or this script is interrupted
-trap 'echo "==> Stopping worker ($WORKER_PID)..."; kill "$WORKER_PID" 2>/dev/null || true' EXIT INT TERM
+echo "$WORKER_PID" > "$PIDFILE_WORKER"
+echo "    worker PID $WORKER_PID — started"
 
 echo "==> Starting web server (http://0.0.0.0:8000)..."
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+UVICORN_PID=$!
+echo "$UVICORN_PID" > "$PIDFILE_WEB"
+echo "    uvicorn PID $UVICORN_PID — started"
+
+# Wait briefly to let uvicorn bind (or fail fast if port is stuck)
+sleep 2
+if ! kill -0 "$UVICORN_PID" 2>/dev/null; then
+    echo "ERROR: uvicorn failed to start. Check logs above."
+    exit 1
+fi
+
+echo ""
+echo "=========================================="
+echo "  GTMFlow is running"
+echo ""
+echo "  Web server:  http://0.0.0.0:8000"
+echo "  Worker:      PID $WORKER_PID"
+echo ""
+echo "  To stop:     kill $WORKER_PID $UVICORN_PID"
+echo "  To restart:  bash $0"
+echo "=========================================="
+
+# Wait for either process to exit, then clean up the other
+wait -n "$WORKER_PID" "$UVICORN_PID" 2>/dev/null || true
+echo "==> One process exited — shutting down..."
+kill "$WORKER_PID" "$UVICORN_PID" 2>/dev/null || true
+rm -f "$PIDFILE_WORKER" "$PIDFILE_WEB"
