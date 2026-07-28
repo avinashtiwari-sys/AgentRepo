@@ -1,6 +1,7 @@
 import smtplib
 import ssl
-from datetime import timezone
+from datetime import datetime, timezone
+from typing import List
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from config import SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM, ALERT_RECIPIENT_EMAIL, TEST_EMAIL, MODE
@@ -101,3 +102,84 @@ def send_lead_alert(lead_id: str, rep: dict, lead_info: dict):
         logger.info("[email] [%s] sent %s -> %s", tag, lead_id, recipients)
     except Exception as e:
         logger.error("[email] [%s] failed to send %s: %s", tag, lead_id, str(e))
+
+
+def send_balance_alert(results: List[dict]):
+    """Send an email alert when one or more service balances are low.
+
+    Parameters
+    ----------
+    results : List[dict]
+        Output of ``check_all_balances()``, filtered to ``status == "low"``.
+    """
+    if not SMTP_HOST or not SMTP_USER:
+        logger.warning("[email] SMTP not configured — skipping balance alert")
+        return
+
+    # Determine recipients
+    if MODE == "prod":
+        recipients = [r.strip() for r in ALERT_RECIPIENT_EMAIL.split(",") if r.strip()]
+        tag = "prod"
+    else:
+        recipients = [TEST_EMAIL.strip()] if TEST_EMAIL else []
+        tag = "dev"
+
+    if not recipients:
+        logger.warning("[email] balance alert — no recipients, skipping")
+        return
+
+    # Build the email body
+    rows = ""
+    for r in results:
+        service = r["service"]
+        msg = r.get("message", "No details")
+        remaining = r.get("remaining")
+        balance = r.get("balance")
+
+        if remaining is not None:
+            detail = f"<b>{remaining}</b> credits remaining"
+        elif balance is not None:
+            detail = f"<b>${balance:.2f}</b> remaining"
+        else:
+            detail = "No balance info available"
+
+        color = "#dc3545" if r.get("status") == "low" else "#856404"
+        rows += f"""<tr style="background:{'#fff3f3' if r.get('status') == 'low' else '#fff'};">
+    <td style="padding:10px;border:1px solid #ddd;font-weight:bold;color:{color};">{service}</td>
+    <td style="padding:10px;border:1px solid #ddd;color:{color};">⚠ LOW</td>
+    <td style="padding:10px;border:1px solid #ddd;">{detail}</td>
+    <td style="padding:10px;border:1px solid #ddd;font-size:12px;color:#666;">{msg}</td>
+</tr>"""
+
+    html = f"""<html><body style="font-family:Arial,sans-serif;color:#222;max-width:600px;margin:0 auto;">
+<h2 style="color:#dc3545;">⚠ Service Balance Alert</h2>
+<p>One or more paid services are running low on credits. Please top up before the service is interrupted.</p>
+<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:13px;">
+<tr style="background:#f8f8f8;">
+    <th style="padding:10px;border:1px solid #ddd;text-align:left;">Service</th>
+    <th style="padding:10px;border:1px solid #ddd;text-align:left;">Status</th>
+    <th style="padding:10px;border:1px solid #ddd;text-align:left;">Remaining</th>
+    <th style="padding:10px;border:1px solid #ddd;text-align:left;">Details</th>
+</tr>
+{rows}
+</table>
+<br>
+<p style="font-size:12px;color:#666;">
+    <b>GTMFlow</b> — automatic balance monitoring<br>
+    Generated at {datetime.now().strftime('%Y-%m-%d %H:%M UTC')}
+</p>
+</body></html>"""
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "⚠ GTMFlow — Low Balance Alert"
+    msg["From"] = SMTP_FROM
+    msg.attach(MIMEText(html, "html"))
+
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+            server.starttls(context=ssl.create_default_context())
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.sendmail(SMTP_FROM, recipients, msg.as_string())
+        logger.info("[email] [%s] balance alert sent -> %s", tag, recipients)
+    except Exception as e:
+        logger.error("[email] [%s] balance alert failed: %s", tag, str(e))
