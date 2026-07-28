@@ -14,6 +14,11 @@ build/
 # Database
 *.db
 *.sqlite3
+*.db.bak
+
+# Logs
+logs/
+*.log
 
 # Zip artifacts
 *.zip
@@ -24,3 +29,10 @@ build/
 # IDE
 .vscode/
 .idea/
+
+# Deployment / local scripts
+autodeploy.sh.disabled
+nginx/
+
+# PM2
+.pm2/

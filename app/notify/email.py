@@ -3,71 +3,101 @@ import ssl
 from datetime import timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from config import SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM
-
-ALERT_TO = "avinash.tiwari@sstsinc.com"
-
+from config import SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM, ALERT_RECIPIENT_EMAIL, TEST_EMAIL, MODE
+from app.logging_config import logger
 
 def send_lead_alert(lead_id: str, rep: dict, lead_info: dict):
-    """Send an HTML email alert via SMTP for a newly routed MQL."""
     if not SMTP_HOST or not SMTP_USER:
-        print("[email] SMTP not configured — skipping alert")
+        logger.warning("[email] SMTP not configured — skipping alert")
         return
 
-    company        = lead_info.get("company", "Unknown")
-    lead_email     = lead_info.get("email", "")
-    industry       = lead_info.get("industry", "Unknown")
-    employee_range = lead_info.get("employee_range") or str(lead_info.get("employee_count") or "Unknown")
-    confidence     = (lead_info.get("confidence") or "").upper()
-    segment        = lead_info.get("segment", "")
-    zoho_url       = f"https://crm.zoho.com/crm/org/leads/{lead_id}"
+    company = lead_info.get("company", "Unknown") or "Unknown"
+    emp_count = lead_info.get("employee_count")
+    emp_range = lead_info.get("employee_range") or (str(emp_count) if emp_count else "Unknown")
+    confidence = (lead_info.get("confidence") or "low").lower()
+    sources = lead_info.get("sources", [])[:3]
+    zoho_url = f"https://crm.zoho.com/crm/org/leads/{lead_id}"
 
-    received_at = lead_info.get("received_at")
-    if received_at:
-        # Ensure UTC label and format as "29 May 2026, 10:45 AM UTC"
-        if received_at.tzinfo is None:
-            received_at = received_at.replace(tzinfo=timezone.utc)
-        timestamp = received_at.strftime("%d %b %Y, %I:%M %p UTC")
+    styles = {"high": ("#28a745", "High Accuracy"), "med": ("#ffc107", "Moderate Accuracy"), "low": ("#dc3545", "Low Accuracy")}
+    acc_color, acc_label = styles.get(confidence, ("#dc3545", "Low Accuracy"))
+
+    ts = lead_info.get("received_at")
+    if ts:
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        timestamp = ts.strftime("%d %b %Y, %I:%M %p UTC")
     else:
         timestamp = "N/A"
 
-    subject = f"New MQL: {company} → {rep['name']}"
+    sources_row = ""
+    if sources:
+        links = "".join(f'<li><a href="{s}">{s[:40]}...</a></li>' for s in sources)
+        sources_row = f"<tr><td><b>Sources</b></td><td><ul style=padding-left:16px;margin:0>{links}</ul></td></tr>"
 
-    html = f"""
-    <html><body style="font-family:Arial,sans-serif;color:#222;max-width:600px">
-      <h2 style="color:#1a73e8">New MQL Assigned — {company}</h2>
-      <table cellpadding="8" cellspacing="0" style="border-collapse:collapse;width:100%">
-        <tr><td><b>Assigned Rep</b></td><td>{rep['name']}</td></tr>
-        <tr style="background:#f5f5f5"><td><b>Segment</b></td><td>{segment}</td></tr>
-        <tr><td><b>Company</b></td><td>{company}</td></tr>
-        <tr style="background:#f5f5f5"><td><b>Lead Email</b></td><td>{lead_email}</td></tr>
-        <tr><td><b>Industry</b></td><td>{industry}</td></tr>
-        <tr style="background:#f5f5f5"><td><b>Employees</b></td><td>{employee_range}</td></tr>
-        <tr><td><b>Confidence</b></td><td>{confidence}</td></tr>
-        <tr style="background:#f5f5f5"><td><b>Received At</b></td><td>{timestamp}</td></tr>
-      </table>
-      <br>
-      <a href="{zoho_url}"
-         style="background:#1a73e8;color:#fff;padding:10px 20px;
-                text-decoration:none;border-radius:4px;display:inline-block">
-        Open in Zoho CRM
-      </a>
-    </body></html>
-    """
+    # Search queries (from Gemini grounding metadata — shows what was searched)
+    search_queries = lead_info.get("_search_queries", [])
+    queries_row = ""
+    if search_queries:
+        qlist = "".join(f"<li>{q}</li>" for q in search_queries)
+        queries_row = f"<tr style=background:#f5f5f5><td><b>Searches</b></td><td><ul style=padding-left:16px;margin:0;font-size:12px;color:#555>{qlist}</ul></td></tr>"
+
+    profiles = lead_info.get("profiles", [])
+    profiles_section = ""
+    if profiles:
+        p = profiles[0]
+        linkedin = p.get("linkedin", "")
+        name = p.get("name", "Unknown")
+        title = p.get("title", "")
+        summary = p.get("summary", "")
+        if linkedin and linkedin.lower() != "unknown":
+            linkedin_html = f'<a href="{linkedin}" style=color:#1a73e8>LinkedIn Profile</a>'
+        else:
+            linkedin_html = "N/A"
+        profiles_section = f"""<h3 style=color:#1a73e8;margin-top:24px>Lead Contact</h3>
+<table cellpadding=8 cellspacing=0 style=border-collapse:collapse;width:100%;font-family:Arial,sans-serif;font-size:13px;background:#f9f9f9;border:1px solid #ddd>
+<tr><td style=font-weight:bold;width:100px>{name}</td><td style=font-size:12px;color:#666>{title}</td><td style=font-size:12px>{summary[:200]}</td><td style=font-size:13px>{linkedin_html}</td></tr>
+</table>"""
+
+    html = f"""<html><body style=font-family:Arial,sans-serif;color:#222;max-width:600px>
+<h2 style=color:#1a73e8>New Lead: {company}</h2>
+<table cellpadding=6 cellspacing=0 style=border-collapse:collapse;width:100%>
+<tr style=background:#f5f5f5><td><b>Assigned</b></td><td>{rep['name']}</td></tr>
+<tr><td><b>Company</b></td><td>{company}</td></tr>
+<tr style=background:#f5f5f5><td><b>Email</b></td><td>{lead_info.get("email","")}</td></tr>
+<tr><td><b>Industry</b></td><td>{lead_info.get("industry","Unknown")}</td></tr>
+<tr style=background:#f5f5f5><td><b>Employees</b></td><td>{emp_range}</td></tr>
+<tr><td><b>Accuracy</b></td><td style=color:{acc_color};font-weight:bold>{acc_label}</td></tr>
+{sources_row}
+{queries_row}
+<tr style=background:#f5f5f5><td><b>Received</b></td><td>{timestamp}</td></tr>
+</table>
+{profiles_section}
+<br><a href="{zoho_url}" style=background:#1a73e8;color:#fff;padding:10px 20px;text-decoration:none;border-radius:4px;display:inline-block>Open in Zoho CRM</a>
+<p style=font-size:12px;color:#666>Lead enrichment via AI web search.</p></body></html>"""
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = SMTP_FROM
-    msg["To"]      = ALERT_TO
+    msg["Subject"] = f"New Lead: {company} -> {rep['name']}"
+    msg["From"] = SMTP_FROM
     msg.attach(MIMEText(html, "html"))
 
+    if MODE == "prod":
+        msg["To"] = ALERT_RECIPIENT_EMAIL
+        recipients = [r.strip() for r in ALERT_RECIPIENT_EMAIL.split(",") if r.strip()]
+        tag = "prod"
+    else:
+        msg["To"] = TEST_EMAIL or "dev@localhost"
+        recipients = [TEST_EMAIL.strip()] if TEST_EMAIL else []
+        tag = "dev"
+
+    if not recipients:
+        logger.warning("[email] lead_id=%s — no recipients, skipping", lead_id)
+        return
+
     try:
-        context = ssl.create_default_context()
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.ehlo()
-            server.starttls(context=context)
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+            server.starttls(context=ssl.create_default_context())
             server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(SMTP_FROM, ALERT_TO, msg.as_string())
-        print(f"[email] alert sent for lead {lead_id} → {ALERT_TO}")
+            server.sendmail(SMTP_FROM, recipients, msg.as_string())
+        logger.info("[email] [%s] sent %s -> %s", tag, lead_id, recipients)
     except Exception as e:
-        print(f"[email] alert error: {e}")
+        logger.error("[email] [%s] failed to send %s: %s", tag, lead_id, str(e))

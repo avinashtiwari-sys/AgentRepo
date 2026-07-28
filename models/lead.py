@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, DateTime, Enum, JSON
+from sqlalchemy import Column, String, DateTime, JSON
 from sqlalchemy.orm import declarative_base
 from datetime import datetime
 import enum
@@ -8,12 +8,13 @@ Base = declarative_base()
 
 class LeadStatus(str, enum.Enum):
     RECEIVED = "received"
-    INVALID_DOMAIN = "invalid_domain"
     ENRICHING = "enriching"
-    INVALID_COMPANY = "invalid_company"
-    REVIEW = "review"
     MQL_VALID = "mql_valid"
     ROUTED = "routed"
+    SKIPPED = "skipped"
+    INVALID_DOMAIN = "invalid_domain"
+    INVALID_COMPANY = "invalid_company"
+    REVIEW = "review"
 
 
 class Lead(Base):
@@ -26,9 +27,26 @@ class Lead(Base):
     company = Column(String)
     domain = Column(String)
     lead_source = Column(String)
-    status = Column(Enum(LeadStatus), default=LeadStatus.RECEIVED)
-    enrichment_data = Column(JSON, default=dict)   # size, industry, confidence
+    # Stored as a plain string (not a DB-native enum) so new statuses don't
+    # require an ALTER TYPE migration. LeadStatus is a str-enum, so assigning
+    # a member stores its value (e.g. "mql_valid").
+    status = Column(String, default=LeadStatus.RECEIVED.value, nullable=False)
+    enrichment_data = Column(JSON, default=dict)   # size, industry, confidence, sources
     assigned_rep = Column(String)
     raw_payload = Column(JSON)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @property
+    def enrichment(self) -> dict:
+        """Return enrichment_data or an empty dict — never None."""
+        return self.enrichment_data or {}
+
+    def set_status(self, new_status: LeadStatus, *, db):
+        """Transition to a new status and commit."""
+        self.status = new_status
+        db.commit()

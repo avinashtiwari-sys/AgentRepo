@@ -1,21 +1,35 @@
 import hmac
-from fastapi import APIRouter, BackgroundTasks, Request, HTTPException, Depends
+from typing import List, Union, Optional
+from fastapi import APIRouter, Request, HTTPException, Depends
+from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 from models.lead import Lead, LeadStatus
 from models.database import get_db
 from config import ZOHO_WEBHOOK_SECRET
+from app.logging_config import logger
+from app.limits import limiter
+from workers.queue import enqueue_pipeline
 
 router = APIRouter()
 
+class ZohoLeadPayload(BaseModel):
+    contact_id: str
+    contact_name: str
+    email: EmailStr
+    company: Optional[str] = ""
+    lead_source: Optional[str] = ""
+    # Optional: Zoho may send the shared secret in the body, but the
+    # X-Zoho-Webhook-Token header is the preferred/ documented transport.
+    token: Optional[str] = None
 
-def _verify_token(token: str) -> bool:
-    """Constant-time comparison against the shared secret configured in Zoho webhook settings."""
+def _verify_token(token: Optional[str]) -> bool:
+    """Constant-time comparison against the shared secret."""
+    if not ZOHO_WEBHOOK_SECRET or not token:
+        return False
     return hmac.compare_digest(token, ZOHO_WEBHOOK_SECRET)
-
 
 def _extract_domain(email: str) -> str:
     return email.split("@")[-1].lower() if "@" in email else ""
-
 
 def _parse_name(contact_name: str):
     """Split 'First Last' into first and last name."""
@@ -24,67 +38,71 @@ def _parse_name(contact_name: str):
     last  = parts[1] if len(parts) > 1 else ""
     return first, last
 
-
 @router.post("/webhook/zoho")
+@limiter.limit("10/minute")
 async def zoho_webhook(
+    payload: Union[ZohoLeadPayload, List[ZohoLeadPayload]],
     request: Request,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
-    payload = await request.json()
-
-    # Token check — read from JSON body (Zoho strips query params in raw JSON mode)
-    if ZOHO_WEBHOOK_SECRET:
-        contacts_data = payload if isinstance(payload, list) else [payload]
-        token = contacts_data[0].get("token", "") if contacts_data else ""
-        if not _verify_token(token):
-            raise HTTPException(status_code=401, detail="Invalid token")
-
-    # Zoho sends a single object — wrap in list for uniform handling
     contacts_data = payload if isinstance(payload, list) else [payload]
+    client_ip = request.client.host if request.client else "unknown"
+
+    # Log every incoming webhook request with lead summaries
+    lead_summaries = [
+        f"id={c.contact_id} email={c.email} company={c.company} source={c.lead_source}"
+        for c in contacts_data
+    ]
+    logger.info(
+        "[webhook] received %d lead(s) from %s — %s",
+        len(contacts_data), client_ip, " | ".join(lead_summaries),
+    )
+
+    # Auth: prefer the X-Zoho-Webhook-Token header; fall back to a body token.
+    header_token = request.headers.get("X-Zoho-Webhook-Token")
+    body_token = contacts_data[0].token if contacts_data else None
+    if not _verify_token(header_token or body_token):
+        logger.warning(
+            "[webhook] REJECTED — invalid or missing token from %s — leads: %s",
+            client_ip, " | ".join(lead_summaries),
+        )
+        raise HTTPException(status_code=401, detail="Invalid or missing webhook token")
 
     accepted = []
     for contact in contacts_data:
-        zoho_id = contact.get("contact_id", "").strip()
-        email   = contact.get("email", "").lower().strip()
+        zoho_id = contact.contact_id.strip()
+        email   = contact.email.lower().strip()
 
-        if not zoho_id or not email:
-            print(f"[webhook] skipped — missing contact_id or email: {contact}")
-            continue
-
-        # Dedup — skip if already received
         if db.query(Lead).filter(Lead.id == zoho_id).first():
-            print(f"[webhook] duplicate — {zoho_id} already exists")
+            logger.info(f"Skipping duplicate lead: {zoho_id} email={email}")
             continue
 
-        first_name, last_name = _parse_name(contact.get("contact_name", ""))
+        first_name, last_name = _parse_name(contact.contact_name)
 
         lead = Lead(
             id=zoho_id,
             email=email,
             first_name=first_name,
             last_name=last_name,
-            company=contact.get("company", ""),
+            company=contact.company,
             domain=_extract_domain(email),
-            lead_source=contact.get("lead_source", ""),
+            lead_source=contact.lead_source,
             status=LeadStatus.RECEIVED,
-            raw_payload=contact,
+            # Never persist the shared secret.
+            raw_payload=contact.model_dump(exclude={"token"}),
         )
         db.add(lead)
         db.commit()
 
-        # Schedule pipeline AFTER response is sent — Zoho gets 200 immediately
-        background_tasks.add_task(_run_pipeline, zoho_id)
+        logger.info(
+            "[webhook] ACCEPTED lead_id=%s email=%s company=%s domain=%s source=%s",
+            zoho_id, email, contact.company, lead.domain, contact.lead_source,
+        )
+        enqueue_pipeline(zoho_id)
         accepted.append(zoho_id)
 
+    logger.info(
+        "[webhook] processed %d/%d leads — accepted: %s",
+        len(accepted), len(contacts_data), accepted,
+    )
     return {"status": "accepted", "lead_ids": accepted}
-
-
-def _run_pipeline(lead_id: str):
-    try:
-        from workers.pipeline import run_pipeline
-        run_pipeline(lead_id)
-    except Exception as e:
-        import traceback
-        print(f"[pipeline] ERROR for lead {lead_id}: {e}")
-        print(traceback.format_exc())

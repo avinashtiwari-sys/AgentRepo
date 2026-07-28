@@ -1,47 +1,41 @@
 from models.lead import Lead, LeadStatus
 from sqlalchemy.orm import Session
 from app.notify import email
-from config import REPS, EMPLOYEE_THRESHOLD
-
-# Mutable index for enterprise round-robin
-_rr_index = {"value": 0}
-
-
-def _next_enterprise_rep() -> dict:
-    reps = REPS["enterprise"]
-    rep = reps[_rr_index["value"] % len(reps)]
-    _rr_index["value"] += 1
-    return rep
-
+from app.logging_config import logger
 
 def run(lead: Lead, db: Session):
-    """Route lead to correct rep based on employee count, then email the team."""
-    enrichment = lead.enrichment_data or {}
-    employee_count = enrichment.get("employee_count")
+    """Notify the sales team of a new MQL."""
+    # Generic assignment for all leads
+    lead.assigned_rep = "Sales Team"
+    lead.set_status(LeadStatus.ROUTED, db=db)
 
-    # Determine segment and rep
-    if employee_count is not None and employee_count > EMPLOYEE_THRESHOLD:
-        segment = "Enterprise"
-        rep = _next_enterprise_rep()
-    else:
-        segment = "SMB / Mid-Market"
-        rep = REPS["smb"]
+    logger.info(
+        "[router] lead_id=%s company=%s industry=%s employee_range=%s confidence=%s assigned_rep=%s status=%s",
+        lead.id, lead.company,
+        lead.enrichment.get("industry"),
+        lead.enrichment.get("employee_range"),
+        lead.enrichment.get("confidence"),
+        lead.assigned_rep,
+        lead.status,
+    )
 
-    lead.assigned_rep = rep["name"]
-    lead.status = LeadStatus.ROUTED
-    db.commit()
-
-    print(f"[router] lead {lead.id} → {rep['name']} ({segment})")
-
-    # Email alert to PcloudySalesMarketing@opkey.com
+    # Email alert
     lead_info = {
         "company": lead.company,
         "email": lead.email,
-        "industry": enrichment.get("industry"),
-        "employee_range": enrichment.get("employee_range"),
-        "employee_count": employee_count,
-        "confidence": enrichment.get("confidence"),
-        "segment": segment,
+        "industry": lead.enrichment.get("industry"),
+        "employee_range": lead.enrichment.get("employee_range"),
+        "employee_count": lead.enrichment.get("employee_count"),
+        "confidence": lead.enrichment.get("confidence"),
+        "sources": lead.enrichment.get("sources", []),
+        "_search_queries": lead.enrichment.get("_search_queries", []),
+        "profiles": lead.enrichment.get("profiles", []),
+        "segment": "All",
         "received_at": lead.created_at,
     }
-    email.send_lead_alert(lead.id, rep, lead_info)
+    email.send_lead_alert(lead.id, {"name": "Sales Team"}, lead_info)
+
+    logger.info(
+        "[router] lead_id=%s — email alert sent to Sales Team",
+        lead.id,
+    )
